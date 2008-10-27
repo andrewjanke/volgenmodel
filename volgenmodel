@@ -121,7 +121,7 @@ chomp($history = `date`);
 $history .= '>>>> ' . join(' ', $me, @ARGV);
 
 # store orig command in case running in batch mode
-@orig_cmd = @ARGV;
+@orig_cmd = ($0, @ARGV);
 
 # Check and get arguments
 &Getopt::Tabular::SetHelp($Help, $Usage);
@@ -166,12 +166,11 @@ if(-e $opt{'output_model'} && !$opt{clobber}){
 # set up the @conf array
 my(@conf);
 if(defined($opt{config_file})){
-   
    my($buf);
    $buf = `cat $opt{config_file}`;
    
    # slurp
-   if (eval($buf)){
+   if(eval($buf)){
       print STDOUT "$me: Read config from $opt{config_file}\n" if $opt{verbose};
       }
    else{
@@ -184,7 +183,6 @@ else{
 
 # extend if we have to and setup @regfiles in the process
 if(defined($opt{extend})){
-
    print STDOUT "+++ Padding and setting up regfiles\n";
    
    my $paddir = "$opt{'workdir'}/pad";
@@ -249,159 +247,159 @@ foreach $end_stage (@fit_stages){
    $stdfile = "$cworkdir/model.std.mnc";
    if(&mcomplete($avgfile) && &mcomplete($stdfile)){
       printf STDOUT "   | $avgfile - exists, skipping\n";
+      $cmodel = $avgfile;
+      $snum++;
+      next;
       }
    
    # fitting time
+   printf STDOUT "   | $avgfile - creating\n";
+   
+   # check that model is isostep and stepped correctly
+   $targetstep = $nlin_conf[$end_stage]{'modelstep'};
+   chomp($oxstep = `mincinfo -attvalue xspace:step $cmodel`);
+   chomp($oystep = `mincinfo -attvalue yspace:step $cmodel`);
+   chomp($ozstep = `mincinfo -attvalue zspace:step $cmodel`);
+   # print STDOUT "BEFORE STEPS: $oxstep, $oystep, $oxstep   ($targetstep)\n";
+   
+   $xstep = ($oxstep > $targetstep) ? $targetstep : $oxstep;
+   $ystep = ($oystep > $targetstep) ? $targetstep : $oystep;
+   $zstep = ($ozstep > $targetstep) ? $targetstep : $ozstep;
+   # print STDOUT "AFTER STEPS: $xstep, $ystep, $xstep   ($targetstep)\n";
+   
+   # set isostep to the max (to be sure)
+   $isostep = ($xstep > $ystep) ? 
+                 (($xstep > $zstep) ? $xstep : $zstep) : 
+                 (($ystep > $zstep) ? $ystep : $zstep);
+   # print STDOUT "ISO STEP: $isostep\n";
+   
+   if($oxstep == $isostep && $oystep == $isostep && $ozstep == $isostep){
+      print STDOUT "---Model steps [$oxstep,$oystep,$ozstep] are good, skipping---\n";
+      }
    else{
-      printf STDOUT "   | $avgfile - creating\n";
-      
-      # check that model is isostep and stepped correctly
-      $targetstep = $nlin_conf[$end_stage]{'modelstep'};
-      chomp($oxstep = `mincinfo -attvalue xspace:step $cmodel`);
-      chomp($oystep = `mincinfo -attvalue yspace:step $cmodel`);
-      chomp($ozstep = `mincinfo -attvalue zspace:step $cmodel`);
-      print STDOUT "BEFORE STEPS: $oxstep, $oystep, $oxstep   ($targetstep)\n";
-      
-      $xstep = ($oxstep > $targetstep) ? $targetstep : $oxstep;
-      $ystep = ($oystep > $targetstep) ? $targetstep : $oystep;
-      $zstep = ($ozstep > $targetstep) ? $targetstep : $ozstep;
-      print STDOUT "AFTER STEPS: $xstep, $ystep, $xstep   ($targetstep)\n";
-      
-      # set isostep to the max (to be sure)
-      $isostep = ($xstep > $ystep) ? 
-                    (($xstep > $zstep) ? $xstep : $zstep) : 
-                    (($ystep > $zstep) ? $ystep : $zstep);
-      print STDOUT "ISO STEP: $isostep\n";
-      
-      if($oxstep == $isostep && $oystep == $isostep && $ozstep == $isostep){
-         print STDOUT "---Model steps [$oxstep,$oystep,$ozstep] are good, skipping---\n";
+      $isomodel = "$cworkdir/fit-model-iso.mnc";
+      if(&mcomplete($isomodel)){
+         printf STDOUT "   | $isomodel - exists, skipping\n";
          }
       else{
-         $isomodel = "$cworkdir/fit-model-iso.mnc";
-         if(&mcomplete($isomodel)){
-            printf STDOUT "   | $isomodel - exists, skipping\n";
-            }
-         else{
-            printf STDOUT "   | $isomodel - creating\n";
-            &do_cmd_batch("ISO-$$-$snum-model", "BLUR-$$-init-model",
-                          'autocrop', '-short',
-                          '-isostep', $isostep,
-                          $cmodel, $isomodel);
-            $cmodel = $isomodel;
-            }
+         printf STDOUT "   | $isomodel - creating\n";
+         &do_cmd_batch("ISO-$$-$snum-model", "BLUR-$$-init-model",
+                       'autocrop', '-short',
+                       '-isostep', $isostep,
+                       $cmodel, $isomodel);
+         $cmodel = $isomodel;
          }
-      
-      # linear or nonlinear fit
-      if($end_stage eq 'lin'){
-         print STDOUT "---Linear fit---\n";
-         }
-      else{
-         print STDOUT "---Non Linear fit---\n";
-         }
-         
-      if($end_stage ne 'lin'){
-         # create nlin fit config
-         $conf_fname = "$cworkdir/$end_stage-fit.conf";
-         if(!-e $conf_fname){
-            print STDOUT "    + Creating $conf_fname +\n";
-            
-            open(CONF, ">$conf_fname");
-            print CONF "# $conf_fname -- created by $me\n\n";
-            print CONF "\@conf = (\n";
-            foreach $stage (0..$end_stage){
-               print CONF "   {'step' => " . $nlin_conf[$stage]{'step'} .
-                  ", 'blur_fwhm' => " . $nlin_conf[$stage]{'blur_fwhm'} .
-                  ", 'iterations' => " . $nlin_conf[$stage]{'iterations'} . "},\n";
-               }
-            print CONF "   );\n";
-            close(CONF);
-            }
-         }
-      
-      # register each file in the input series
-      for($f=0; $f<=$#files; $f++){
-         $initxfm = "lib/ident-16.xfm";
-         $modxfm[$f] = "$cworkdir/$files[$f].xfm";
-         
-         if(-e $modxfm[$f]){
-            printf STDOUT "---$modxfm[$f] exists, skipping---\n";
-            }
-         else{
-            
-            if($end_stage eq 'lin'){
-               &do_cmd_batch("FIT-$$-$snum-$f", "ISO-$$-$snum-model",
-                             'bestlinreg', 
-                             $cmodel, $regfiles[$f],
-                             $modxfm[$f]);
-               }
-            
-            else{
-               &do_cmd_batch("FIT-$$-$snum-$f", "ISO-$$-$snum-model",
-                             'nlpfit', 
-                           # '-extend', '10',
-                             '-init_xfm', $initxfm,
-                             '-config', $conf_fname,
-                             $cmodel, $regfiles[$f],
-                             $modxfm[$f]);
-               }
-            }
-         }
-      
-      
-      # average xfms
-      $avgxfm = "$cworkdir/avgxfm.xfm";
-      &do_cmd_batch("AVGXFM-$$-$snum", "FIT-$$-$snum-*",
-                    'xfmavg', '-clobber',
-                    (($end_stage eq 'lin') ? '-ignore_nonlinear' : '-ignore_linear'),
-                    @modxfm, $avgxfm);
-      
-      
-      # resample each file in the input series
-      for($f=0; $f<=$#files; $f++){
-         $concatxfm = "$cworkdir/concat-$files[$f].xfm";
-         $rsmpl[$f] = "$cworkdir/rsmpl-$files[$f].mnc";
-         
-         if(&mcomplete($rsmpl[$f])){
-            printf STDOUT "   | $rsmpl[$f] - exists, skipping\n";
-            }
-         else{
-            printf STDOUT "   | $rsmpl[$f] - resampling\n";
-            
-            # first remove due to dodgy xfmtool code with no -clobber
-            $gridfn = $concatxfm;
-            $gridfn =~ s/\.xfm$/\_grid\_0\.mnc/;
-            &do_cmd('rm', '-f', $concatxfm, $gridfn);
-            
-            # concat xfms
-            &do_cmd_batch("XFMCON-$$-$snum-$f", "AVGXFM-$$-$snum",
-                          'xfmtool', "invert:$modxfm[$f]", $avgxfm, $concatxfm);
-            
-            # resample
-            &do_cmd_batch("XFMCON-$$-$snum-$f", "RES-$$-$snum-$f", 
-                          'mincresample', '-clobber',
-                          '-transformation', $concatxfm,
-                          '-like', $cmodel,
-                          $infiles[$f], $rsmpl[$f]);
-            }
-         }
-      
-      
-      # create model
-      &do_cmd_batch("MDL-$$-$snum", "RES-$$-$snum-*",
-                    'mincaverage', '-clobber',
-                    '-double',
-                    '-sdfile', $stdfile,
-                    @rsmpl, $avgfile);
-      
-      # if on last step, copy model to $opt{'output_model'}
-      if($snum == $#fit_stages){
-         &do_cmd_batch("FINAL-$$-cp", "MDL-$$-$snum",
-                       'cp', '-i', $avgfile, $opt{'output_model'});
-         }
-      
-      exit;
       }
    
+   # linear or nonlinear fit
+   if($end_stage eq 'lin'){
+      print STDOUT "---Linear fit---\n";
+      }
+   else{
+      print STDOUT "---Non Linear fit---\n";
+      }
+   
+   if($end_stage ne 'lin'){
+      # create nlin fit config
+      $conf_fname = "$cworkdir/$end_stage-fit.conf";
+      if(!-e $conf_fname){
+         print STDOUT "    + Creating $conf_fname +\n";
+         
+         open(CONF, ">$conf_fname");
+         print CONF "# $conf_fname -- created by $me\n\n";
+         print CONF "\@conf = (\n";
+         foreach $stage (0..$end_stage){
+            print CONF "   {'step' => " . $nlin_conf[$stage]{'step'} .
+               ", 'blur_fwhm' => " . $nlin_conf[$stage]{'blur_fwhm'} .
+               ", 'iterations' => " . $nlin_conf[$stage]{'iterations'} . "},\n";
+            }
+         print CONF "   );\n";
+         close(CONF);
+         }
+      }
+   
+   # register each file in the input series
+   for($f=0; $f<=$#files; $f++){
+      $initxfm = "lib/ident-16.xfm";
+      $modxfm[$f] = "$cworkdir/$files[$f].xfm";
+      
+      if(-e $modxfm[$f]){
+         printf STDOUT "---$modxfm[$f] exists, skipping---\n";
+         }
+      else{
+         if($end_stage eq 'lin'){
+            &do_cmd_batch("FIT-$$-$snum-$f", "ISO-$$-$snum-model",
+                          'bestlinreg', 
+                          $cmodel, $regfiles[$f], $modxfm[$f]);
+            }
+         else{
+            &do_cmd_batch("FIT-$$-$snum-$f", "ISO-$$-$snum-model",
+                          'nlpfit',
+                          '-init_xfm', $initxfm,
+                          '-config', $conf_fname,
+                          $cmodel, $regfiles[$f], $modxfm[$f]);
+            }
+         }
+      }
+   
+   # average xfms
+   $avgxfm = "$cworkdir/avgxfm.xfm";
+   &do_cmd_batch("AVGXFM-$$-$snum", "FIT-$$-$snum-*",
+                 'xfmavg', '-clobber',
+                 (($end_stage eq 'lin') ? '-ignore_nonlinear' : '-ignore_linear'),
+                 @modxfm, $avgxfm);
+   
+   # resample each file in the input series
+   for($f=0; $f<=$#files; $f++){
+      $concatxfm = "$cworkdir/concat-$files[$f].xfm";
+      $rsmpl[$f] = "$cworkdir/rsmpl-$files[$f].mnc";
+      
+      if(&mcomplete($rsmpl[$f])){
+         printf STDOUT "   | $rsmpl[$f] - exists, skipping\n";
+         }
+      else{
+         printf STDOUT "   | $rsmpl[$f] - resampling\n";
+         
+         # first remove due to dodgy xfmtool code with no -clobber
+         $gridfn = $concatxfm;
+         $gridfn =~ s/\.xfm$/\_grid\_0\.mnc/;
+         &do_cmd('rm', '-f', $concatxfm, $gridfn);
+         
+         # concat xfms
+         &do_cmd_batch("XFMCON-$$-$snum-$f", "AVGXFM-$$-$snum",
+                       'xfmtool', "invert:$modxfm[$f]", $avgxfm, $concatxfm);
+         
+         # resample
+         &do_cmd_batch("RES-$$-$snum-$f", "XFMCON-$$-$snum-$f", 
+                       'mincresample', '-clobber',
+                       '-transformation', $concatxfm,
+                       '-like', $cmodel,
+                       $infiles[$f], $rsmpl[$f]);
+         }
+      }
+   
+   # create model
+   &do_cmd_batch("MDL-$$-$snum", "RES-$$-$snum-*",
+                 'mincaverage', '-clobber',
+                 '-double',
+                 '-sdfile', $stdfile,
+                 @rsmpl, $avgfile);
+   
+   # if on last step, copy model to $opt{'output_model'}
+   if($snum == $#fit_stages){
+      &do_cmd_batch("FINAL-$$-$snum", "MDL-$$-$snum",
+                    'cp', '-i', $avgfile, $opt{'output_model'});
+      }
+   else{
+      &do_cmd_batch("FINAL-$$-$snum", "MDL-$$-$snum", 'true');
+      }
+   
+   # and now we get to some ugly spaghetti(ish) code whereby we resubmit ourselves
+   # for the next iteration and then exit
+   if($opt{'batch'}){
+      &do_cmd_batch("STAGE-$$-$snum", "FINAL-$$-$snum", @orig_cmd);
+      exit(0);
+      }
    
    $cmodel = $avgfile;
    $snum++;
@@ -422,8 +420,6 @@ sub do_cmd_batch {
    
    $scriptdir = "$opt{'workdir'}/scripts";
    &do_cmd('mkdir', '-p', $scriptdir);
-#  
- #  $script = "$scriptdir/$name.sh";
    
    print STDOUT "[$name:$depends] - @_\n" if $opt{verbose};
    if(!$opt{fake}){
@@ -444,7 +440,7 @@ sub do_cmd_batch {
 sub print_version_info {
    print STDOUT "\n$PACKAGE version $VERSION\n".
                 "Comments to $PACKAGE_BUGREPORT\n\n";
-   exit;
+   exit 0;
    }
 
 # little function to test if a minc file is complete (and exists)
