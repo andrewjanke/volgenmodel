@@ -103,8 +103,8 @@ $Usage = "Usage: $me [options] <in1.mnc> [<in2.mnc> [...]]\n".
    ["-extend", "integer", 1, \$opt{extend},
       "extend the volume by # slices before fitting to avoid edge effects",
       "<integer>" ],
-   ["-symmetric", "boolean", 0, \$opt{symmetric},
-      "do a symmetric (L-R) registration" ],
+#   ["-symmetric", "boolean", 0, \$opt{symmetric},
+#      "do a symmetric (L-R) registration" ],
    ["-config_file", "string", 1, \$opt{config_file},
       "file containing the fitting configuration use -help for format",
       "<fit.conf>" ],
@@ -163,6 +163,15 @@ if(-e $opt{'output_model'} && !$opt{clobber}){
 # make working dir
 &do_cmd('mkdir', $opt{'workdir'}) if !-e $opt{'workdir'};
 
+# save the original command for later use
+open(FH, '>', "$opt{'workdir'}/orig-command-$$.sh");
+print FH "#! /bin/sh\n" .
+         "#\n".
+         "# volgenmodel script\n\n" .
+         join(' ', @orig_cmd) ."\n";
+&do_cmd('chmod', '+x', "$opt{'workdir'}/orig-command-$$.sh");
+&do_cmd('ln', '-s', '-f', "orig-command-$$.sh", "$opt{'workdir'}/orig-command-last.sh");
+
 # set up the @conf array
 my(@conf);
 if(defined($opt{config_file})){
@@ -197,11 +206,10 @@ if(defined($opt{extend})){
       else{
          printf STDOUT "   | $regfiles[$f] - padding\n";
          &do_cmd_batch("PAD-$$-$f", 'none',
-                       'autocrop', '-clobber',
-                       '-extend',
-                       "$opt{extend}v,$opt{extend}v",
-                       "$opt{extend}v,$opt{extend}v",
-                       "0v,$opt{extend}v",
+                       'volpad', '-clobber', 
+                       '-distance', $opt{'extend'},
+                       '-smooth',
+                       '-smooth_distance', 4,
                        $infiles[$f], $regfiles[$f]);
          }
       }
@@ -220,23 +228,42 @@ else{
    $cmodel = "$opt{'workdir'}/00-init-model_blur.mnc";
    if(&mcomplete($cmodel)){
       printf STDOUT "   | $cmodel - exists, skipping\n";
-      &do_cmd_batch("BLUR-$$-init-model", "PAD-$$-$files[0]",
+      &do_cmd_batch("BLR-$$-init-model", "PAD-$$-$files[0]",
                     'true');
       }
    else{
       printf STDOUT "   | $cmodel - creating\n";
-      &do_cmd_batch("BLUR-$$-init-model", "PAD-$$-$files[0]",
+      &do_cmd_batch("BLR-$$-init-model", "PAD-$$-$files[0]",
                     'mincblur', '-clobber',
                     '-fwhm', 4,
                     $regfiles[0], "$opt{'workdir'}/00-init-model");
       }
    }
 
+# create an approriate identity transformation
+$initxfm = "$opt{'workdir'}/ident-$nlin_conf[0]{'step'}.xfm";
+&do_cmd_batch("IDT-$$", "none",
+              'gennlxfm', '-clobber',
+              '-like', $cmodel,
+              '-step', $nlin_conf[0]{'step'},
+              $initxfm);
+
+
+# get last linear stage from fit config
+$snum = 0;
+$lastlin = "00";
+foreach $s (@fit_stages){
+   if($s eq 'lin'){
+      $lastlin = sprintf("%02d",$snum);
+      }
+   $snum++;
+   }
+print STDOUT "+++ Last Linear stage: $lastlin\n";
+
 
 # Foreach end stage in the fitting profile
 print STDOUT "+++ Fitting\n";
 $snum = 0;
-$lastlin = 0;
 foreach $end_stage (@fit_stages){
    $snum_txt = sprintf("%02d", $snum);
    print STDOUT "  + [Stage: $snum_txt] End stage: $end_stage\n";
@@ -255,61 +282,32 @@ foreach $end_stage (@fit_stages){
       next;
       }
    
-   # fitting time
-   printf STDOUT "   | $avgfile - creating\n";
-   
-   # check that model is isostep and stepped correctly
-   $targetstep = $nlin_conf[(($end_stage eq 'lin') ? 0 : $end_stage)]{'modelstep'};
-   chomp($oxstep = `mincinfo -attvalue xspace:step $cmodel`);
-   chomp($oystep = `mincinfo -attvalue yspace:step $cmodel`);
-   chomp($ozstep = `mincinfo -attvalue zspace:step $cmodel`);
-   # print STDOUT "BEFORE STEPS: $oxstep, $oystep, $oxstep   ($targetstep)\n";
-   
-   $xstep = ($oxstep > $targetstep) ? $targetstep : $oxstep;
-   $ystep = ($oystep > $targetstep) ? $targetstep : $oystep;
-   $zstep = ($ozstep > $targetstep) ? $targetstep : $ozstep;
-   # print STDOUT "AFTER STEPS: $xstep, $ystep, $xstep   ($targetstep)\n";
-   
-   # set isostep to the max (to be sure)
-   $isostep = ($xstep > $ystep) ? 
-                 (($xstep > $zstep) ? $xstep : $zstep) : 
-                 (($ystep > $zstep) ? $ystep : $zstep);
-   # print STDOUT "ISO STEP: $isostep\n";
-   
-   if($oxstep == $isostep && $oystep == $isostep && $ozstep == $isostep){
-      print STDOUT "---Model steps [$oxstep,$oystep,$ozstep] are good, skipping---\n";
+   # create the ISO model
+   $isomodel = "$cworkdir/fit-model-iso.mnc";
+   printf STDOUT "   | $isomodel - creating\n";
+   if(&mcomplete($isomodel)){
+      &do_cmd_batch("ISO-$$-$snum_txt-model", "BLR-$$-init-model",
+                    'true');
       }
    else{
-      $isomodel = "$cworkdir/fit-model-iso.mnc";
-      if(&mcomplete($isomodel)){
-         printf STDOUT "   | $isomodel - exists, skipping\n";
-         &do_cmd_batch("ISO-$$-$snum_txt-model", "BLUR-$$-init-model",
-                       'true');
-         }
-      else{
-         printf STDOUT "   | $isomodel - creating\n";
-         &do_cmd_batch("ISO-$$-$snum_txt-model", "BLUR-$$-init-model",
-                       'autocrop', '-clobber', 
-                       '-short',
-                       '-isostep', $isostep,
-                       $cmodel, $isomodel);
-         $cmodel = $isomodel;
-         }
+      $targetstep = $nlin_conf[(($end_stage eq 'lin') ? 0 : $end_stage)]{'modelstep'};
+      &do_cmd_batch("ISO-$$-$snum_txt-model", "BLR-$$-init-model",
+                    'voliso', '-clobber',
+                    '-step', $targetstep,
+                    $cmodel, $isomodel);
       }
+   $cmodel = $isomodel;
    
    # linear or nonlinear fit
    if($end_stage eq 'lin'){
       print STDOUT "---Linear fit---\n";
-      $lastlin = $snum_txt;
       }
    else{
       print STDOUT "---Non Linear fit---\n";
-      }
-   
-   if($end_stage ne 'lin'){
+      
       # create nlin fit config
-      $conf_fname = "$cworkdir/$end_stage-fit.conf";
-      if(!-e $conf_fname){
+      if($end_stage ne 'lin'){
+         $conf_fname = "$cworkdir/$end_stage-fit.conf";
          print STDOUT "    + Creating $conf_fname +\n";
          
          open(CONF, ">$conf_fname");
@@ -325,35 +323,29 @@ foreach $end_stage (@fit_stages){
          }
       }
    
-   # create an approriate identity transformation
-   $initxfm = "$cworkdir/ident-$nlin_conf[0]{'step'}.xfm";
-   &do_cmd_batch("IDENT-$$-$snum_txt", "ISO-$$-$snum_txt-model",
-                 'gennlxfm', '-clobber',
-                 '-like', $cmodel,
-                 '-step', $nlin_conf[0]{'step'},
-                 $initxfm);
-   
    # register each file in the input series
    for($f=0; $f<=$#files; $f++){
       $modxfm[$f] = "$cworkdir/$files[$f].xfm";
       
       if(-e $modxfm[$f]){
          printf STDOUT "---$modxfm[$f] exists, skipping---\n";
+         &do_cmd_batch("FIT-$$-$snum_txt-$f", "ISO-$$-$snum_txt-model",
+                       'true');
          }
       else{
          if($end_stage eq 'lin'){
-            &do_cmd_batch("FIT-$$-$snum_txt-$f", "IDENT-$$-$snum_txt-model",
+            &do_cmd_batch("FIT-$$-$snum_txt-$f", "ISO-$$-$snum_txt-model",
                           'bestlinreg', 
                           $cmodel, $regfiles[$f], $modxfm[$f]);
             }
          else{
             # use the last linear xfm as a starting point
             $cnctxfm = "$cworkdir/$files[$f].cnct.xfm";
-            &do_cmd_batch("INITXFM-$$-$snum_txt-$f", "IDENT-$$-$snum_txt-model",
+            &do_cmd_batch("IXF-$$-$snum_txt-$f", "ISO-$$-$snum_txt-model,IDT-$$",
                           'xfmconcat', 
                           "$opt{'workdir'}/$lastlin/$files[$f].xfm", $initxfm, $cnctxfm);
             
-            &do_cmd_batch("FIT-$$-$snum_txt-$f", "INITXFM-$$-$snum_txt-model",
+            &do_cmd_batch("FIT-$$-$snum_txt-$f", "IXF-$$-$snum_txt-$f",
                           'nlpfit',
                           '-init_xfm', $cnctxfm,
                           '-config', $conf_fname,
@@ -364,7 +356,7 @@ foreach $end_stage (@fit_stages){
    
    # average xfms
    $avgxfm = "$cworkdir/avgxfm.xfm";
-   &do_cmd_batch("AVGXFM-$$-$snum_txt", "FIT-$$-$snum_txt-*",
+   &do_cmd_batch("AXF-$$-$snum_txt", "FIT-$$-$snum_txt-*",
                  'xfmavg', '-clobber',
                  (($end_stage eq 'lin') ? '-ignore_nonlinear' : '-ignore_linear'),
                  @modxfm, $avgxfm);
@@ -386,12 +378,13 @@ foreach $end_stage (@fit_stages){
          &do_cmd('rm', '-f', $concatxfm, $gridfn);
          
          # concat xfms
-         &do_cmd_batch("XFMCON-$$-$snum_txt-$f", "AVGXFM-$$-$snum_txt",
+         &do_cmd_batch("XCN-$$-$snum_txt-$f", "AXF-$$-$snum_txt",
                        'xfmtool', "invert:$modxfm[$f]", $avgxfm, $concatxfm);
          
          # resample
-         &do_cmd_batch("RES-$$-$snum_txt-$f", "XFMCON-$$-$snum_txt-$f", 
+         &do_cmd_batch("RES-$$-$snum_txt-$f", "XCN-$$-$snum_txt-$f", 
                        'mincresample', '-clobber',
+                       '-sinc',
                        '-transformation', $concatxfm,
                        '-like', $cmodel,
                        $infiles[$f], $rsmpl[$f]);
@@ -407,17 +400,17 @@ foreach $end_stage (@fit_stages){
    
    # if on last step, copy model to $opt{'output_model'}
    if($snum == $#fit_stages){
-      &do_cmd_batch("FINAL-$$-$snum_txt", "AVG-$$-$snum_txt",
+      &do_cmd_batch("FNL-$$-$snum_txt", "AVG-$$-$snum_txt",
                     'cp', '-i', $avgfile, $opt{'output_model'});
       }
    else{
-      &do_cmd_batch("FINAL-$$-$snum_txt", "AVG-$$-$snum_txt", 'true');
+      &do_cmd_batch("FNL-$$-$snum_txt", "AVG-$$-$snum_txt", 'true');
       }
    
    # and now we get to some ugly spaghetti(ish) code whereby we resubmit ourselves
    # for the next iteration and then exit
    if($opt{'batch'}){
-      &do_cmd_batch("STAGE-$$-$snum_txt", "FINAL-$$-$snum_txt", @orig_cmd);
+      &do_cmd_batch("STG-$$-$snum_txt", "FNL-$$-$snum_txt", @orig_cmd);
       exit(0);
       }
    
@@ -434,12 +427,15 @@ sub do_cmd {
    }
 
 # run a command possibly via batch
+# 1st param: Job Name
+# 2nd param: Depends string
+# remainder: command
 sub do_cmd_batch {
    $name = shift(@_);
    $depends = shift(@_);
    
    $logdir = "$opt{'workdir'}/log";
-   &do_cmd('mkdir', '-p', $logdir);
+   &do_cmd('mkdir', '-p', $logdir) if (!-e $logdir);
    
    print STDOUT "[$name:$depends] - @_\n" if $opt{verbose};
    if(!$opt{fake}){
@@ -449,6 +445,7 @@ sub do_cmd_batch {
                  '-logfile', "$logdir/$name.log",
                  '-N', $name,
                  '-depends', $depends,
+                 '--',
                  @_);
          }
       else{   
