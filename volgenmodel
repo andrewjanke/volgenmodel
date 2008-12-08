@@ -242,7 +242,7 @@ else{
 
 # create an approriate identity transformation
 $initxfm = "$opt{'workdir'}/ident-$nlin_conf[0]{'step'}.xfm";
-&do_cmd_batch("IDT-$$", "none",
+&do_cmd_batch("IDT-$$", "BLR-$$-init-model",
               'gennlxfm', '-clobber',
               '-like', $cmodel,
               '-step', $nlin_conf[0]{'step'},
