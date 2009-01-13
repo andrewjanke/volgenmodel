@@ -103,8 +103,8 @@ $Usage = "Usage: $me [options] <in1.mnc> [<in2.mnc> [...]]\n".
    ["-extend", "integer", 1, \$opt{extend},
       "extend the volume by # slices before fitting to avoid edge effects",
       "<integer>" ],
-#   ["-symmetric", "boolean", 0, \$opt{symmetric},
-#      "do a symmetric (L-R) registration" ],
+   ["-symmetric", "boolean", 0, \$opt{symmetric},
+      "create a symmetric model" ],
    ["-config_file", "string", 1, \$opt{config_file},
       "file containing the fitting configuration use -help for format",
       "<fit.conf>" ],
@@ -327,7 +327,7 @@ foreach $end_stage (@fit_stages){
    for($f=0; $f<=$#files; $f++){
       $modxfm[$f] = "$cworkdir/$files[$f].xfm";
       
-      if(-e $modxfm[$f]){
+      if(&mcomplete($modxfm[$f])){
          printf STDOUT "---$modxfm[$f] exists, skipping---\n";
          &do_cmd_batch("FIT-$$-$snum_txt-$f", "ISO-$$-$snum_txt-model",
                        'true');
@@ -335,18 +335,18 @@ foreach $end_stage (@fit_stages){
       else{
          if($end_stage eq 'lin'){
             &do_cmd_batch("FIT-$$-$snum_txt-$f", "ISO-$$-$snum_txt-model",
-                          'bestlinreg', 
+                          'bestlinreg', '-clobber',
                           $cmodel, $regfiles[$f], $modxfm[$f]);
             }
          else{
             # use the last linear xfm as a starting point
             $cnctxfm = "$cworkdir/$files[$f].cnct.xfm";
             &do_cmd_batch("IXF-$$-$snum_txt-$f", "ISO-$$-$snum_txt-model,IDT-$$",
-                          'xfmconcat', 
+                          'xfmconcat', '-clobber', 
                           "$opt{'workdir'}/$lastlin/$files[$f].xfm", $initxfm, $cnctxfm);
             
             &do_cmd_batch("FIT-$$-$snum_txt-$f", "IXF-$$-$snum_txt-$f",
-                          'nlpfit',
+                          'nlpfit', '-clobber',
                           '-init_xfm', $cnctxfm,
                           '-config', $conf_fname,
                           $cmodel, $regfiles[$f], $modxfm[$f]);
@@ -392,19 +392,42 @@ foreach $end_stage (@fit_stages){
       }
    
    # create model
-   &do_cmd_batch("AVG-$$-$snum_txt", "RES-$$-$snum_txt-*",
+   $iavgfile = "$cworkdir/model.iavg.mnc";
+   &do_cmd_batch("IAV-$$-$snum_txt", "RES-$$-$snum_txt-*",
                  'mincaverage', '-clobber',
                  '-double',
                  '-sdfile', $stdfile,
-                 @rsmpl, $avgfile);
+                 @rsmpl, $iavgfile);
+   
+   # do symmetric averaging if required
+   $symxfm = "$cworkdir/model.sym.xfm";
+   if($opt{'symmetric'}){
+      my @fit_args;
+      
+      # set up fit args
+      if($end_stage eq 'lin'){
+         @fit_args = ('-linear');
+         }
+      else{
+         @fit_args = ('-nonlinear', '-config_file', $conf_fname);
+         }
+      
+      &do_cmd_batch("SYM-$$-$snum_txt", "IAV-$$-$snum_txt",
+                    'volsymm', '-clobber',
+                    @fit_args,
+                    $iavgfile, $symxfm, $avgfile);
+      }
+   else{
+      &do_cmd_batch("SYM-$$-$snum_txt", "IAV-$$-$snum_txt", 'true');
+      }
    
    # if on last step, copy model to $opt{'output_model'}
    if($snum == $#fit_stages){
-      &do_cmd_batch("FNL-$$-$snum_txt", "AVG-$$-$snum_txt",
+      &do_cmd_batch("FNL-$$-$snum_txt", "SYM-$$-$snum_txt",
                     'cp', '-i', $avgfile, $opt{'output_model'});
       }
    else{
-      &do_cmd_batch("FNL-$$-$snum_txt", "AVG-$$-$snum_txt", 'true');
+      &do_cmd_batch("FNL-$$-$snum_txt", "SYM-$$-$snum_txt", 'true');
       }
    
    # and now we get to some ugly spaghetti(ish) code whereby we resubmit ourselves
@@ -460,18 +483,11 @@ sub print_version_info {
    exit 0;
    }
 
-# little function to test if a minc file is complete (and exists)
+# little function to test if a minc or xfm file is complete (and exists)
 sub mcomplete {
    my $infile = shift(@_);
    
-   # quick check
-   return 0 if (!-e $infile);
+   chomp(my $buf = `minccomplete -error_string 1 $infile`);
    
-   chomp(my $buf = `minccomplete $infile`);
-   if($buf == 0){
-      return 1;
-      }
-   else{
-      return 0;
-      }
+   return ($buf == 0) ? 1 : 0;
    }
