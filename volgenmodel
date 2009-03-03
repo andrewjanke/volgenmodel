@@ -1,6 +1,6 @@
 #! /usr/bin/env perl
 #
-# massive script to generate a nonlinear model
+# generate a nonlinear model
 #
 # Andrew Janke - a.janke@gmail.com
 #
@@ -13,16 +13,17 @@
 # without express or implied warranty.
 
 
-#use strict;
+$| = 0;
+
+use strict;
 use warnings "all";
 use Getopt::Tabular;
 use File::Basename;
 use File::Temp qw/ tempdir /;
-use Data::Dumper;
 
 # until I get organised and do this properly
 my $PACKAGE = &basename($0);
-my $VERSION = '1.0.0';
+my $VERSION = '1.1.0';
 my $PACKAGE_BUGREPORT = '"Andrew Janke" <a.janke@gmail.com>';
 
 my @nlin_conf = (
@@ -33,7 +34,7 @@ my @nlin_conf = (
    );
 
 
-my($Help, $Usage, $me);
+my($Help, $Usage, $me, $history);
 my(@opt_table, %opt, @infiles, @args);
 
 $me = &basename($0);
@@ -121,7 +122,7 @@ chomp($history = `date`);
 $history .= '>>>> ' . join(' ', $me, @ARGV);
 
 # store orig command in case running in batch mode
-@orig_cmd = ($0, @ARGV);
+my @orig_cmd = ($0, @ARGV);
 
 # Check and get arguments
 &Getopt::Tabular::SetHelp($Help, $Usage);
@@ -130,7 +131,7 @@ die $Usage if $#ARGV < 0;
 @infiles = @ARGV;
 
 # setup the fit stages
-@fit_stages = split(',', $opt{'fit_stages'});
+my @fit_stages = split(',', $opt{'fit_stages'});
 
 # check for infiles and create files array
 print STDOUT "+++ INFILES\n" if $opt{'verbose'};
@@ -172,8 +173,9 @@ print FH "#! /bin/sh\n" .
 &do_cmd('chmod', '+x', "$opt{'workdir'}/orig-command-$$.sh");
 &do_cmd('ln', '-s', '-f', "orig-command-$$.sh", "$opt{'workdir'}/orig-command-last.sh");
 
+my(@conf, @regfiles, $cmodel, $initxfm);
+
 # set up the @conf array
-my(@conf);
 if(defined($opt{config_file})){
    my($buf);
    $buf = `cat $opt{config_file}`;
@@ -191,10 +193,12 @@ else{
    }
 
 # extend if we have to and setup @regfiles in the process
-if(defined($opt{extend})){
+if($opt{extend} > 0){
+   my($paddir, $f);
+   
    print STDOUT "+++ Padding and setting up regfiles\n";
    
-   my $paddir = "$opt{'workdir'}/pad";
+   $paddir = "$opt{'workdir'}/pad";
    &do_cmd('mkdir', '-p', $paddir);
    
    for($f=0; $f<=$#files; $f++){
@@ -205,7 +209,7 @@ if(defined($opt{extend})){
          }
       else{
          printf STDOUT "   | $regfiles[$f] - padding\n";
-         &do_cmd_batch("PAD-$$-$f", 'none',
+         &do_cmd_batch("PAD$$-$f", 'none',
                        'volpad', '-clobber', 
                        '-distance', $opt{'extend'},
                        '-smooth',
@@ -228,12 +232,12 @@ else{
    $cmodel = "$opt{'workdir'}/00-init-model_blur.mnc";
    if(&mcomplete($cmodel)){
       printf STDOUT "   | $cmodel - exists, skipping\n";
-      &do_cmd_batch("BLR-$$-init-model", "PAD-$$-$files[0]",
+      &do_cmd_batch("BLR$$-init-model", "PAD$$-$files[0]",
                     'true');
       }
    else{
       printf STDOUT "   | $cmodel - creating\n";
-      &do_cmd_batch("BLR-$$-init-model", "PAD-$$-$files[0]",
+      &do_cmd_batch("BLR$$-init-model", "PAD$$-$files[0]",
                     'mincblur', '-clobber',
                     '-fwhm', 4,
                     $regfiles[0], "$opt{'workdir'}/00-init-model");
@@ -242,7 +246,7 @@ else{
 
 # create an approriate identity transformation
 $initxfm = "$opt{'workdir'}/ident-$nlin_conf[0]{'step'}.xfm";
-&do_cmd_batch("IDT-$$", "BLR-$$-init-model",
+&do_cmd_batch("IDT$$", "BLR$$-init-model",
               'gennlxfm', '-clobber',
               '-like', $cmodel,
               '-step', $nlin_conf[0]{'step'},
@@ -250,8 +254,9 @@ $initxfm = "$opt{'workdir'}/ident-$nlin_conf[0]{'step'}.xfm";
 
 
 # get last linear stage from fit config
+my($snum, $lastlin, $s, $end_stage);
 $snum = 0;
-$lastlin = "00";
+$lastlin = '00';
 foreach $s (@fit_stages){
    if($s eq 'lin'){
       $lastlin = sprintf("%02d",$snum);
@@ -265,6 +270,9 @@ print STDOUT "+++ Last Linear stage: $lastlin\n";
 print STDOUT "+++ Fitting\n";
 $snum = 0;
 foreach $end_stage (@fit_stages){
+   my($snum_txt, $f, $cworkdir, $avgfile, $stdfile, $isomodel, $conf_fname, 
+      @modxfm, $avgxfm, $concatxfm, @rsmpl, $iavgfile, $symxfm);
+   
    $snum_txt = sprintf("%02d", $snum);
    print STDOUT "  + [Stage: $snum_txt] End stage: $end_stage\n";
    
@@ -286,14 +294,14 @@ foreach $end_stage (@fit_stages){
    $isomodel = "$cworkdir/fit-model-iso.mnc";
    printf STDOUT "   | $isomodel - creating\n";
    if(&mcomplete($isomodel)){
-      &do_cmd_batch("ISO-$$-$snum_txt-model", "BLR-$$-init-model",
+      &do_cmd_batch("ISO$$-$snum_txt-model", "BLR$$-init-model",
                     'true');
       }
    else{
-      $targetstep = $nlin_conf[(($end_stage eq 'lin') ? 0 : $end_stage)]{'modelstep'};
-      &do_cmd_batch("ISO-$$-$snum_txt-model", "BLR-$$-init-model",
+      my $targetstep = $nlin_conf[(($end_stage eq 'lin') ? 0 : $end_stage)]{'modelstep'};
+      &do_cmd_batch("ISO$$-$snum_txt-model", "BLR$$-init-model",
                     'voliso', '-clobber',
-                    '-step', $targetstep,
+                    '-maxstep', $targetstep,
                     $cmodel, $isomodel);
       }
    $cmodel = $isomodel;
@@ -313,10 +321,10 @@ foreach $end_stage (@fit_stages){
          open(CONF, ">$conf_fname");
          print CONF "# $conf_fname -- created by $me\n\n";
          print CONF "\@conf = (\n";
-         foreach $stage (0..$end_stage){
-            print CONF "   {'step' => " . $nlin_conf[$stage]{'step'} .
-               ", 'blur_fwhm' => " . $nlin_conf[$stage]{'blur_fwhm'} .
-               ", 'iterations' => " . $nlin_conf[$stage]{'iterations'} . "},\n";
+         foreach $s (0..$end_stage){
+            print CONF "   {'step' => " . $nlin_conf[$s]{'step'} .
+               ", 'blur_fwhm' => " . $nlin_conf[$s]{'blur_fwhm'} .
+               ", 'iterations' => " . $nlin_conf[$s]{'iterations'} . "},\n";
             }
          print CONF "   );\n";
          close(CONF);
@@ -329,25 +337,25 @@ foreach $end_stage (@fit_stages){
       
       if(&mcomplete($modxfm[$f])){
          printf STDOUT "---$modxfm[$f] exists, skipping---\n";
-         &do_cmd_batch("FIT-$$-$snum_txt-$f", "ISO-$$-$snum_txt-model",
+         &do_cmd_batch("FIT$$-$snum_txt-$f", "ISO$$-$snum_txt-model",
                        'true');
          }
       else{
          if($end_stage eq 'lin'){
-            &do_cmd_batch("FIT-$$-$snum_txt-$f", "ISO-$$-$snum_txt-model",
+            &do_cmd_batch("FIT$$-$snum_txt-$f", "ISO$$-$snum_txt-model",
                           'bestlinreg', '-clobber',
                           $cmodel, $regfiles[$f], $modxfm[$f]);
             }
          else{
             # use the last linear xfm as a starting point
-            $cnctxfm = "$cworkdir/$files[$f].cnct.xfm";
-            &do_cmd_batch("IXF-$$-$snum_txt-$f", "ISO-$$-$snum_txt-model,IDT-$$",
+            my $initcnctxfm = "$cworkdir/$files[$f].cnct.xfm";
+            &do_cmd_batch("IXF$$-$snum_txt-$f", "ISO$$-$snum_txt-model,IDT$$",
                           'xfmconcat', '-clobber', 
-                          "$opt{'workdir'}/$lastlin/$files[$f].xfm", $initxfm, $cnctxfm);
+                          "$opt{'workdir'}/$lastlin/$files[$f].xfm", $initxfm, $initcnctxfm);
             
-            &do_cmd_batch("FIT-$$-$snum_txt-$f", "IXF-$$-$snum_txt-$f",
+            &do_cmd_batch("FIT$$-$snum_txt-$f", "IXF$$-$snum_txt-$f",
                           'nlpfit', '-clobber',
-                          '-init_xfm', $cnctxfm,
+                          '-init_xfm', $initcnctxfm,
                           '-config', $conf_fname,
                           $cmodel, $regfiles[$f], $modxfm[$f]);
             }
@@ -356,7 +364,7 @@ foreach $end_stage (@fit_stages){
    
    # average xfms
    $avgxfm = "$cworkdir/avgxfm.xfm";
-   &do_cmd_batch("AXF-$$-$snum_txt", "FIT-$$-$snum_txt-*",
+   &do_cmd_batch("AXF$$-$snum_txt", "FIT$$-$snum_txt-*",
                  'xfmavg', '-clobber',
                  (($end_stage eq 'lin') ? '-ignore_nonlinear' : '-ignore_linear'),
                  @modxfm, $avgxfm);
@@ -373,16 +381,16 @@ foreach $end_stage (@fit_stages){
          printf STDOUT "   | $rsmpl[$f] - resampling\n";
          
          # first remove due to dodgy xfmtool code with no -clobber
-         $gridfn = $concatxfm;
+         my $gridfn = $concatxfm;
          $gridfn =~ s/\.xfm$/\_grid\_0\.mnc/;
          &do_cmd('rm', '-f', $concatxfm, $gridfn);
          
          # concat xfms
-         &do_cmd_batch("XCN-$$-$snum_txt-$f", "AXF-$$-$snum_txt",
+         &do_cmd_batch("XCN$$-$snum_txt-$f", "AXF$$-$snum_txt",
                        'xfmtool', "invert:$modxfm[$f]", $avgxfm, $concatxfm);
          
          # resample
-         &do_cmd_batch("RES-$$-$snum_txt-$f", "XCN-$$-$snum_txt-$f", 
+         &do_cmd_batch("RES$$-$snum_txt-$f", "XCN$$-$snum_txt-$f", 
                        'mincresample', '-clobber',
                        '-sinc',
                        '-transformation', $concatxfm,
@@ -393,7 +401,7 @@ foreach $end_stage (@fit_stages){
    
    # create model
    $iavgfile = "$cworkdir/model.iavg.mnc";
-   &do_cmd_batch("IAV-$$-$snum_txt", "RES-$$-$snum_txt-*",
+   &do_cmd_batch("IAV$$-$snum_txt", "RES$$-$snum_txt-*",
                  'mincaverage', '-clobber',
                  '-double',
                  '-sdfile', $stdfile,
@@ -412,29 +420,35 @@ foreach $end_stage (@fit_stages){
          @fit_args = ('-nonlinear', '-config_file', $conf_fname);
          }
       
-      &do_cmd_batch("SYM-$$-$snum_txt", "IAV-$$-$snum_txt",
+      &do_cmd_batch("SYM$$-$snum_txt", "IAV$$-$snum_txt",
                     'volsymm', '-clobber',
                     @fit_args,
                     $iavgfile, $symxfm, $avgfile);
       }
    else{
-      &do_cmd_batch("SYM-$$-$snum_txt", "IAV-$$-$snum_txt", 'true');
+      &do_cmd_batch("SYM$$-$snum_txt", "IAV$$-$snum_txt", 'true');
       }
    
    # if on last step, copy model to $opt{'output_model'}
    if($snum == $#fit_stages){
-      &do_cmd_batch("FNL-$$-$snum_txt", "SYM-$$-$snum_txt",
+      &do_cmd_batch("FNL$$-$snum_txt", "SYM$$-$snum_txt",
                     'cp', '-i', $avgfile, $opt{'output_model'});
+      
+      # add the history string to the output file
+      &do_cmd_batch("HIS$$-$snum_txt", "FNL$$-$snum_txt",
+                    'minc_modify_header', 
+                    '-sappend', ":history='$history'", 
+                    $opt{'output_model'});
       }
    else{
-      &do_cmd_batch("FNL-$$-$snum_txt", "SYM-$$-$snum_txt", 'true');
-      }
-   
-   # and now we get to some ugly spaghetti(ish) code whereby we resubmit ourselves
-   # for the next iteration and then exit
-   if($opt{'batch'}){
-      &do_cmd_batch("STG-$$-$snum_txt", "FNL-$$-$snum_txt", @orig_cmd);
-      exit(0);
+      &do_cmd_batch("FNL$$-$snum_txt", "SYM$$-$snum_txt", 'true');
+      
+      # and now we get to some ugly spaghetti(ish) code whereby we resubmit ourselves
+      # for the next iteration and then exit
+      if($opt{'batch'}){
+         &do_cmd_batch("STG$$-$snum_txt", "FNL$$-$snum_txt", @orig_cmd);
+         exit(0);
+         }
       }
    
    $cmodel = $avgfile;
@@ -454,6 +468,7 @@ sub do_cmd {
 # 2nd param: Depends string
 # remainder: command
 sub do_cmd_batch {
+   my($name, $depends, $logdir);
    $name = shift(@_);
    $depends = shift(@_);
    
@@ -464,6 +479,7 @@ sub do_cmd_batch {
    if(!$opt{fake}){
       
       if($opt{'batch'}){
+         print '   [B] ';
          &do_cmd('qbatch', 
                  '-logfile', "$logdir/$name.log",
                  '-N', $name,
