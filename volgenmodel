@@ -170,8 +170,20 @@ print FH "#! /bin/sh\n" .
          "#\n".
          "# volgenmodel script\n\n" .
          join(' ', @orig_cmd) ."\n";
+close(FH);
 &do_cmd('chmod', '+x', "$opt{'workdir'}/orig-command-$$.sh");
 &do_cmd('ln', '-s', '-f', "orig-command-$$.sh", "$opt{'workdir'}/orig-command-last.sh");
+
+# write script to kill processing
+if($opt{'batch'}){
+   open(FH, '>', "$opt{'workdir'}/kill-proc.sh");
+   print FH "#! /bin/sh\n" .
+            "#\n" .
+            "# simple script to kill processing\n\n" .
+            "qdel \'*$$*\'\n";
+   close(FH);
+   &do_cmd('chmod', '+x', "$opt{'workdir'}/kill-proc.sh");
+   }
 
 my(@conf, @regfiles, $cmodel, $initxfm);
 
