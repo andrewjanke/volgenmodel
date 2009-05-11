@@ -23,19 +23,19 @@ use File::Temp qw/ tempdir /;
 
 # until I get organised and do this properly
 my $PACKAGE = &basename($0);
-my $VERSION = '1.1.0';
+my $VERSION = '1.2.0';
 my $PACKAGE_BUGREPORT = '"Andrew Janke" <a.janke@gmail.com>';
 
-my @nlin_conf = (
-   {'step' => 16, 'blur_fwhm' => 16, 'iterations' => 4, 'modelstep' => 2.0},
-   {'step' =>  8, 'blur_fwhm' =>  8, 'iterations' => 8, 'modelstep' => 1.5},
-   {'step' =>  4, 'blur_fwhm' =>  4, 'iterations' => 8, 'modelstep' => 1.0},
-   {'step' =>  2, 'blur_fwhm' =>  2, 'iterations' => 4, 'modelstep' => 0.5},
+my @default_conf = (
+   {'step' => 16, 'blur_fwhm' => 16, 'iterations' => 4},
+   {'step' =>  8, 'blur_fwhm' =>  8, 'iterations' => 8},
+   {'step' =>  4, 'blur_fwhm' =>  4, 'iterations' => 8},
+   {'step' =>  2, 'blur_fwhm' =>  2, 'iterations' => 4},
    );
 
 
 my($Help, $Usage, $me, $history);
-my(@opt_table, %opt, @infiles, @args);
+my(@opt_table, %opt, @infiles, @args, $tmpdir);
 
 $me = &basename($0);
 %opt = (
@@ -46,6 +46,7 @@ $me = &basename($0);
    'workdir' => "./$me-work",
    'batch' => 0,
    'symmetric' => 0,
+   'normalise' => 1,
    'extend' => 10,
    'config_file' => undef,
    'init_model' => undef,
@@ -57,10 +58,10 @@ $Help = <<HELP;
 | $me makes a model via lots of processing....
 |
 | To add an additional step, you will need to add another stanza
-|    to the \@nlin_conf array;
+|    to the \@conf array;
 |
 | # example configuration file (fit.conf) for $me
-| \@nlin_conf = (
+| \@conf = (
 |    {'step'         => 16,
 |     'blur_fwhm'    => 8,
 |     'iterations'   => 3,
@@ -101,6 +102,8 @@ $Usage = "Usage: $me [options] <in1.mnc> [<in2.mnc> [...]]\n".
       "use a batch system for processing (qbatch)" ],
 
    ["Fitting Options", "section" ],
+   ["-normalise", "boolean", 0, \$opt{normalise},
+      "normalise and threshold the input data before fitting" ],
    ["-extend", "integer", 1, \$opt{extend},
       "extend the volume by # slices before fitting to avoid edge effects",
       "<integer>" ],
@@ -190,6 +193,8 @@ my(@conf, @regfiles, $cmodel, $initxfm);
 # set up the @conf array
 if(defined($opt{config_file})){
    my($buf);
+   
+   # read in @conf
    $buf = `cat $opt{config_file}`;
 
    # slurp
@@ -201,38 +206,73 @@ if(defined($opt{config_file})){
       }
    }
 else{
-   @conf = @nlin_conf;
+   @conf = @default_conf;
    }
 
-# extend if we have to and setup @regfiles in the process
+
+# set up the regfiles array (modify in place)
+@regfiles = @infiles;
+
+# normalise and threshold
+if($opt{'normalise'}){
+   my($nrmdir, $f, $outfile);
+   
+   print STDOUT "+++ Normalising and thresholding input data\n";
+   
+   $nrmdir = "$opt{'workdir'}/00-nrm";
+   &do_cmd('mkdir', '-p', $nrmdir);
+   
+   for($f=0; $f<=$#files; $f++){
+      $outfile = "$nrmdir/$files[$f].nrm.mnc";
+      
+      if(&mcomplete($outfile)){
+         printf STDOUT "   | $outfile - exists, skipping\n";
+         }
+      else{
+         printf STDOUT "   | $outfile - normalising\n";
+         &do_cmd_batch("NRM$$-$f", 'none',
+                       'mincnorm', '-clobber',
+                       '-cutoff', 1.0,
+                       '-threshold',
+                       '-threshold_perc', 0.1,
+                       '-threshold_blur', 3,
+                       $infiles[$f], $outfile);
+         }
+      
+      $regfiles[$f] = $outfile;
+      }
+   }
+
+# extend
 if($opt{extend} > 0){
-   my($paddir, $f);
+   my($paddir, $f, $outfile);
 
-   print STDOUT "+++ Padding and setting up regfiles\n";
+   print STDOUT "+++ Extending (padding) and setting up regfiles\n";
 
-   $paddir = "$opt{'workdir'}/pad";
+   $paddir = "$opt{'workdir'}/00-pad";
    &do_cmd('mkdir', '-p', $paddir);
 
    for($f=0; $f<=$#files; $f++){
-      $regfiles[$f] = "$paddir/$files[$f].pad.mnc";
+      $outfile = "$paddir/$files[$f].pad.mnc";
 
-      if(&mcomplete($regfiles[$f])){
-         printf STDOUT "   | $regfiles[$f] - exists, skipping\n";
+      if(&mcomplete($outfile)){
+         printf STDOUT "   | $outfile - exists, skipping\n";
          }
       else{
-         printf STDOUT "   | $regfiles[$f] - padding\n";
-         &do_cmd_batch("PAD$$-$f", 'none',
+         printf STDOUT "   | $outfile - padding\n";
+         &do_cmd_batch("PAD$$-$f", "NRM$$-$f",
                        'volpad', '-clobber',
                        '-distance', $opt{'extend'},
                        '-smooth',
-                       '-smooth_distance', 4,
-                       $infiles[$f], $regfiles[$f]);
+                       '-smooth_distance', sprintf('%d', $opt{'extend'}/3),
+                       $regfiles[$f], $outfile);
          }
+      
+      $regfiles[$f] = $outfile;
       }
    }
-else{
-   @regfiles = @infiles;
-   }
+
+
 
 # setup the initial model
 print STDOUT "+++ Setting up the initial model\n";
@@ -255,12 +295,12 @@ else{
       }
    }
 
-# create an approriate identity transformation
-$initxfm = "$opt{'workdir'}/ident-$nlin_conf[0]{'step'}.xfm";
+# create an apropriate identity transformation
+$initxfm = "$opt{'workdir'}/ident-$conf[0]{'step'}.xfm";
 &do_cmd_batch("IDT$$", "BLR$$-init-model",
               'gennlxfm', '-clobber',
               '-like', $cmodel,
-              '-step', $nlin_conf[0]{'step'},
+              '-step', $conf[0]{'step'},
               $initxfm);
 
 
@@ -308,12 +348,14 @@ for($snum = 0; $snum <= $#fit_stages; $snum++){
    $isomodel = "$cworkdir/fit-model-iso.mnc";
    printf STDOUT "   | $isomodel - creating\n";
    
-   my $targetstep = $nlin_conf[(($end_stage eq 'lin') ? 0 : $end_stage)]{'modelstep'};
+   
+   my $modelmaxstep = $conf[(($end_stage eq 'lin') ? 0 : $end_stage)]{'step'}/4;
+   print "   -- Model Max step: $modelmaxstep\n" if $opt{'verbose'};
    &do_cmd_batch("ISO$$-$snum_txt-model", "BLR$$-init-model",
                   'voliso', '-clobber',
-                  '-maxstep', $targetstep,
+                  '-maxstep', $modelmaxstep,
                   $cmodel, $isomodel);
-
+   
    # linear or nonlinear fit
    if($end_stage eq 'lin'){
       print STDOUT "---Linear fit---\n";
@@ -330,9 +372,9 @@ for($snum = 0; $snum <= $#fit_stages; $snum++){
          print CONF "# $conf_fname -- created by $me\n\n";
          print CONF "\@conf = (\n";
          foreach $s (0..$end_stage){
-            print CONF "   {'step' => " . $nlin_conf[$s]{'step'} .
-               ", 'blur_fwhm' => " . $nlin_conf[$s]{'blur_fwhm'} .
-               ", 'iterations' => " . $nlin_conf[$s]{'iterations'} . "},\n";
+            print CONF "   {'step' => " . $conf[$s]{'step'} .
+               ", 'blur_fwhm' => " . $conf[$s]{'blur_fwhm'} .
+               ", 'iterations' => " . $conf[$s]{'iterations'} . "},\n";
             }
          print CONF "   );\n";
          close(CONF);
@@ -410,7 +452,7 @@ for($snum = 0; $snum <= $#fit_stages; $snum++){
    # create model
    &do_cmd_batch("IAV$$-$snum_txt", "RES$$-$snum_txt-*",
                  'mincaverage', '-clobber',
-                 '-double',
+                 '-float',
                  '-sdfile', $istdfile,
                  @rsmpl, $iavgfile);
 
