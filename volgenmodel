@@ -23,7 +23,7 @@ use File::Temp qw/ tempdir /;
 
 # until I get organised and do this properly
 my $PACKAGE = &basename($0);
-my $VERSION = '1.2.0';
+my $VERSION = '1.2.1';
 my $PACKAGE_BUGREPORT = '"Andrew Janke" <a.janke@gmail.com>';
 
 my @default_conf = (
@@ -284,11 +284,11 @@ else{
    $cmodel = "$opt{'workdir'}/00-init-model_blur.mnc";
    if(&mcomplete($cmodel)){
       printf STDOUT "   | $cmodel - exists, skipping\n";
-      &do_cmd_batch("BLR$$-init-model", "PAD$$-$files[0]", 'true');
+      &do_cmd_batch("BLR$$-init-model", "PAD$$-0", 'true');
       }
    else{
       printf STDOUT "   | $cmodel - creating\n";
-      &do_cmd_batch("BLR$$-init-model", "PAD$$-$files[0]",
+      &do_cmd_batch("BLR$$-init-model", "PAD$$-0",
                     'mincblur', '-clobber',
                     '-fwhm', 4,
                     $regfiles[0], "$opt{'workdir'}/00-init-model");
