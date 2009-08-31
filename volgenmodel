@@ -23,7 +23,7 @@ use File::Temp qw/ tempdir /;
 
 # until I get organised and do this properly
 my $PACKAGE = &basename($0);
-my $VERSION = '1.2.1';
+my $VERSION = '1.2.2';
 my $PACKAGE_BUGREPORT = '"Andrew Janke" <a.janke@gmail.com>';
 
 my @default_conf = (
@@ -42,6 +42,7 @@ $me = &basename($0);
    'verbose' => 0,
    'clobber' => 0,
    'fake' => 0,
+   'check' => 1,
    'keep_tmp' => 0,
    'workdir' => "./$me-work",
    'batch' => 0,
@@ -96,6 +97,8 @@ $Usage = "Usage: $me [options] <in1.mnc> [<in2.mnc> [...]]\n".
       "clobber existing check files" ],
    ["-fake", "boolean", 0, \$opt{fake},
       "do a dry run, (echo cmds only)" ],
+   ["-check", "boolean", 0, \$opt{'check'},
+      "generate jpg check files during processing" ],
    ["-workdir", "string", 1, \$opt{workdir},
       "working directory to use (multiple GB needed)" ],
    ["-batch", "boolean", 0, \$opt{'batch'},
@@ -215,7 +218,7 @@ else{
 
 # normalise and threshold
 if($opt{'normalise'}){
-   my($nrmdir, $f, $outfile);
+   my($nrmdir, $f, $outfile, $chkfile);
    
    print STDOUT "+++ Normalising and thresholding input data\n";
    
@@ -224,6 +227,7 @@ if($opt{'normalise'}){
    
    for($f=0; $f<=$#files; $f++){
       $outfile = "$nrmdir/$files[$f].nrm.mnc";
+      $chkfile = "$nrmdir/$files[$f].nrm.jpg";
       
       if(&mcomplete($outfile)){
          printf STDOUT "   | $outfile - exists, skipping\n";
@@ -237,6 +241,12 @@ if($opt{'normalise'}){
                        '-threshold_perc', 0.1,
                        '-threshold_blur', 3,
                        $infiles[$f], $outfile);
+         
+         &do_cmd_batch("cNRM$$-$f", "NRM$$-$f",
+                       'mincpik', '-clobber',
+                       '-triplanar',
+                       '-sagittal_offset', 10,
+                       $outfile, $chkfile) if $opt{'check'};
          }
       
       $regfiles[$f] = $outfile;
@@ -245,7 +255,7 @@ if($opt{'normalise'}){
 
 # extend
 if($opt{extend} > 0){
-   my($paddir, $f, $outfile);
+   my($paddir, $f, $outfile, $chkfile);
 
    print STDOUT "+++ Extending (padding) and setting up regfiles\n";
 
@@ -254,6 +264,7 @@ if($opt{extend} > 0){
 
    for($f=0; $f<=$#files; $f++){
       $outfile = "$paddir/$files[$f].pad.mnc";
+      $chkfile = "$paddir/$files[$f].pad.jpg";
 
       if(&mcomplete($outfile)){
          printf STDOUT "   | $outfile - exists, skipping\n";
@@ -266,6 +277,12 @@ if($opt{extend} > 0){
                        '-smooth',
                        '-smooth_distance', sprintf('%d', $opt{'extend'}/3),
                        $regfiles[$f], $outfile);
+         
+         &do_cmd_batch("cPAD$$-$f", "PAD$$-$f",
+                       'mincpik', '-clobber',
+                       '-triplanar',
+                       '-sagittal_offset', 10,
+                       $outfile, $chkfile) if $opt{'check'};
          }
       
       $regfiles[$f] = $outfile;
@@ -319,9 +336,8 @@ print STDOUT "+++ Last Linear stage: $lastlin\n";
 # Foreach end stage in the fitting profile
 print STDOUT "+++ Fitting\n";
 for($snum = 0; $snum <= $#fit_stages; $snum++){
-   my($snum_txt, $end_stage, $f, $cworkdir, $istdfile, $isomodel,
-      $conf_fname, @modxfm, $avgxfm, $concatxfm, @rsmpl, $iavgfile,
-      $stage_model);
+   my($snum_txt, $end_stage, $f, $cworkdir,
+      $conf_fname, @modxfm, $concatxfm, @rsmpl);
 
    $end_stage = $fit_stages[$snum];
    $snum_txt = sprintf("%02d", $snum);
@@ -332,10 +348,15 @@ for($snum = 0; $snum <= $#fit_stages; $snum++){
    &do_cmd('mkdir', $cworkdir) if !-e $cworkdir;
 
    # set up model and xfm names
+   my($avgxfm, $iavgfile, $istdfile, $stage_model, 
+      $iavgfilechk, $istdfilechk, $stage_modelchk);
    $avgxfm = "$cworkdir/avgxfm.xfm";
    $iavgfile = "$cworkdir/model.iavg.mnc";
    $istdfile = "$cworkdir/model.istd.mnc";
    $stage_model = "$cworkdir/model.avg.mnc";
+   $iavgfilechk = "$cworkdir/model.iavg.jpg";
+   $istdfilechk = "$cworkdir/model.istd.jpg";
+   $stage_modelchk = "$cworkdir/model.avg.jpg";
 
    # if this stages model exists, skip to the next stage
    if(&mcomplete($stage_model)){
@@ -345,16 +366,23 @@ for($snum = 0; $snum <= $#fit_stages; $snum++){
       }
 
    # create the ISO model
+   my($isomodel, $isomodelchk, $modelmaxstep);
    $isomodel = "$cworkdir/fit-model-iso.mnc";
+   $isomodelchk = "$cworkdir/fit-model-iso.jpg";
+   
    printf STDOUT "   | $isomodel - creating\n";
-   
-   
-   my $modelmaxstep = $conf[(($end_stage eq 'lin') ? 0 : $end_stage)]{'step'}/4;
+   $modelmaxstep = $conf[(($end_stage eq 'lin') ? 0 : $end_stage)]{'step'}/4;
    print "   -- Model Max step: $modelmaxstep\n" if $opt{'verbose'};
    &do_cmd_batch("ISO$$-$snum_txt-model", "BLR$$-init-model",
-                  'voliso', '-clobber',
-                  '-maxstep', $modelmaxstep,
-                  $cmodel, $isomodel);
+                 'voliso', '-clobber',
+                 '-maxstep', $modelmaxstep,
+                 $cmodel, $isomodel);
+   &do_cmd_batch("cISO$$-$snum-txt-model", "ISO$$-$snum-txt-model",
+                 'mincpik', '-clobber',
+                 '-triplanar', '-horizontal',
+                 '-scale', 4, '-tilesize', 400,
+                 '-sagittal_offset', 10,
+                 $isomodel, $isomodelchk) if $opt{'check'};
    
    # linear or nonlinear fit
    if($end_stage eq 'lin'){
@@ -423,6 +451,7 @@ for($snum = 0; $snum <= $#fit_stages; $snum++){
    for($f=0; $f<=$#files; $f++){
       $concatxfm = "$cworkdir/concat-$files[$f].xfm";
       $rsmpl[$f] = "$cworkdir/rsmpl-$files[$f].mnc";
+      my $chkfile = "$cworkdir/rsmpl-$files[$f].jpg";
 
       if(&mcomplete($rsmpl[$f])){
          printf STDOUT "   | $rsmpl[$f] - exists, skipping\n";
@@ -446,6 +475,11 @@ for($snum = 0; $snum <= $#fit_stages; $snum++){
                        '-transformation', $concatxfm,
                        '-like', $isomodel,
                        $infiles[$f], $rsmpl[$f]);
+         &do_cmd_batch("cRES$$-$snum_txt-$f", "RES$$-$snum_txt-$f",
+                       'mincpik', '-clobber',
+                       '-triplanar',
+                       '-sagittal_offset', 10,
+                       $rsmpl[$f], $chkfile) if $opt{'check'};
          }
       }
 
@@ -455,6 +489,19 @@ for($snum = 0; $snum <= $#fit_stages; $snum++){
                  '-float',
                  '-sdfile', $istdfile,
                  @rsmpl, $iavgfile);
+   &do_cmd_batch("cIAV$$-$snum_txt", "IAV$$-$snum_txt",
+                 'mincpik', '-clobber',
+                 '-triplanar', '-horizontal',
+                 '-scale', 4, '-tilesize', 400,
+                 '-sagittal_offset', 10,
+                 $iavgfile, $iavgfilechk) if $opt{'check'};
+   &do_cmd_batch("cIAV$$-$snum_txt", "IAV$$-$snum_txt",
+                 'mincpik', '-clobber',
+                 '-triplanar', '-horizontal',
+                 '-scale', 4, '-tilesize', 400,
+                 '-lookup', '-hotmetal',
+                 '-sagittal_offset', 10,
+                 $istdfile, $istdfilechk) if $opt{'check'};
 
    # do symmetric averaging if required
    if($opt{'symmetric'}){
@@ -479,6 +526,12 @@ for($snum = 0; $snum <= $#fit_stages; $snum++){
       &do_cmd_batch("SYM$$-$snum_txt", "IAV$$-$snum_txt",
                     'ln', '-s', '-f', &basename($iavgfile), $stage_model);
       }
+   &do_cmd_batch("cSYM$$-$snum_txt", "SYM$$-$snum_txt",
+                 'mincpik', '-clobber',
+                 '-triplanar', '-horizontal',
+                 '-scale', 4, '-tilesize', 400,
+                 '-sagittal_offset', 10,
+                 $stage_model, $stage_modelchk) if $opt{'check'};
 
    # if on last step, copy model to $opt{'output_model'}
    if($snum == $#fit_stages){
