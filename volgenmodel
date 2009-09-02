@@ -366,23 +366,38 @@ for($snum = 0; $snum <= $#fit_stages; $snum++){
       }
 
    # create the ISO model
-   my($isomodel, $isomodelchk, $modelmaxstep);
-   $isomodel = "$cworkdir/fit-model-iso.mnc";
-   $isomodelchk = "$cworkdir/fit-model-iso.jpg";
+   my($isomodel_base, $modelmaxstep);
+   $isomodel_base = "$cworkdir/fit-model-iso";
    
-   printf STDOUT "   | $isomodel - creating\n";
+   printf STDOUT "   | $isomodel_base - creating\n";
    $modelmaxstep = $conf[(($end_stage eq 'lin') ? 0 : $end_stage)]{'step'}/4;
    print "   -- Model Max step: $modelmaxstep\n" if $opt{'verbose'};
-   &do_cmd_batch("ISO$$-$snum_txt-model", "BLR$$-init-model",
+   &do_cmd_batch("NRM$$-$snum_txt-model", "BLR$$-init-model",
+                 'mincnorm', '-clobber',
+                 '-threshold', '-threshold_bmt',
+                 '-threshold_mask', "$isomodel_base.msk.mnc",
+                 $cmodel, "$isomodel_base.nrm.mnc");
+   &do_cmd_batch("ISO$$-$snum_txt-model", "NRM$$-$snum_txt-model",
                  'voliso', '-clobber',
                  '-maxstep', $modelmaxstep,
-                 $cmodel, $isomodel);
-   &do_cmd_batch("cISO$$-$snum-txt-model", "ISO$$-$snum-txt-model",
+                 "$isomodel_base.nrm.mnc","$isomodel_base.mnc");
+   &do_cmd_batch("cISO$$-$snum_txt-model", "ISO$$-$snum_txt-model",
                  'mincpik', '-clobber',
                  '-triplanar', '-horizontal',
                  '-scale', 4, '-tilesize', 400,
                  '-sagittal_offset', 10,
-                 $isomodel, $isomodelchk) if $opt{'check'};
+                 "$isomodel_base.mnc", "$isomodel_base.jpg") if $opt{'check'};
+   
+   # create the isomodel fit mask
+   &do_cmd_batch("ISB$$-$snum_txt-model", "NRM$$-$snum_txt-model",
+                 'mincblur', '-clobber',
+                 '-fwhm', 15,
+                 "$isomodel_base.msk.mnc", "$isomodel_base.msk");
+   &do_cmd_batch("ISM$$-$snum_txt-model", "ISB$$-$snum_txt-model",
+                 'mincmath', '-clobber',
+                 '-gt', '-const', 0.1,
+                 "$isomodel_base.msk_blur.mnc", "$isomodel_base.fit-msk.mnc");
+   
    
    # linear or nonlinear fit
    if($end_stage eq 'lin'){
@@ -393,11 +408,14 @@ for($snum = 0; $snum <= $#fit_stages; $snum++){
 
       # create nlin fit config
       if($end_stage ne 'lin'){
-         $conf_fname = "$cworkdir/$end_stage-fit.conf";
+         $conf_fname = "$cworkdir/fit.conf";
          print STDOUT "    + Creating $conf_fname +\n";
 
          open(CONF, ">$conf_fname");
-         print CONF "# $conf_fname -- created by $me\n\n";
+         print CONF "# $conf_fname -- created by $me\n#\n" .
+                    "# End stage: $end_stage\n" .
+                    "# Stage Num: $snum_txt\n\n";
+         
          print CONF "\@conf = (\n";
          foreach $s (0..$end_stage){
             print CONF "   {'step' => " . $conf[$s]{'step'} .
@@ -422,21 +440,22 @@ for($snum = 0; $snum <= $#fit_stages; $snum++){
          if($end_stage eq 'lin'){
             &do_cmd_batch("FIT$$-$snum_txt-$f", "ISO$$-$snum_txt-model",
                           'bestlinreg', '-clobber',
-                          $isomodel, $regfiles[$f], $modxfm[$f]);
+                          "$isomodel_base.mnc", $regfiles[$f], $modxfm[$f]);
             }
          else{
             # use the last linear xfm as a starting point
             my $initcnctxfm = "$cworkdir/$files[$f].cnct.xfm";
             &do_cmd_batch("IXF$$-$snum_txt-$f", "ISO$$-$snum_txt-model,IDT$$",
                           'xfmconcat', '-clobber',
-                          "$opt{'workdir'}/$lastlin/$files[$f].xfm", $initxfm,
+                          "$opt{'workdir'}/$lastlin/concat-$files[$f].xfm", $initxfm,
                           $initcnctxfm);
 
             &do_cmd_batch("FIT$$-$snum_txt-$f", "IXF$$-$snum_txt-$f",
                           'nlpfit', '-clobber',
                           '-init_xfm', $initcnctxfm,
                           '-config', $conf_fname,
-                          $isomodel, $regfiles[$f], $modxfm[$f]);
+                          '-source_mask', "$isomodel_base.fit-msk.mnc",
+                          "$isomodel_base.mnc", $regfiles[$f], $modxfm[$f]);
             }
          }
       }
@@ -473,7 +492,7 @@ for($snum = 0; $snum <= $#fit_stages; $snum++){
                        'mincresample', '-clobber',
                        '-sinc',
                        '-transformation', $concatxfm,
-                       '-like', $isomodel,
+                       '-like', "$isomodel_base.mnc",
                        $infiles[$f], $rsmpl[$f]);
          &do_cmd_batch("cRES$$-$snum_txt-$f", "RES$$-$snum_txt-$f",
                        'mincpik', '-clobber',
