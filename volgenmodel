@@ -484,15 +484,11 @@ for($snum = 0; $snum <= $#fit_stages; $snum++){
       else{
          printf STDOUT "   | $rsmpl[$f] - resampling\n";
 
-         # first remove due to dodgy xfmtool code with no -clobber
-         #my $gridfn = $concatxfm;
-         #$gridfn =~ s/\.xfm$/\_grid\_0\.mnc/;
-         #&do_cmd('rm', '-f', $concatxfm, $gridfn);
-
-         # concat xfms
+         # invert model xfm
          &do_cmd_batch("XIN$$-$snum_txt-$f", "FIT$$-$snum_txt-$f",
                        'xfminvert', $modxfm[$f], $invxfm);
          
+         # concat
          &do_cmd_batch("XCN$$-$snum_txt-$f", "AXF$$-$snum_txt,XIN$$-$snum_txt-$f",
                        'xfmconcat', $invxfm, $avgxfm, $resxfm);
 
