@@ -23,7 +23,7 @@ use File::Temp qw/ tempdir /;
 
 # until I get organised and do this properly
 my $PACKAGE = &basename($0);
-my $VERSION = '1.2.2';
+my $VERSION = '1.3.0';
 my $PACKAGE_BUGREPORT = '"Andrew Janke" <a.janke@gmail.com>';
 
 my @default_conf = (
@@ -337,7 +337,7 @@ print STDOUT "+++ Last Linear stage: $lastlin\n";
 print STDOUT "+++ Fitting\n";
 for($snum = 0; $snum <= $#fit_stages; $snum++){
    my($snum_txt, $end_stage, $f, $cworkdir,
-      $conf_fname, @modxfm, $concatxfm, @rsmpl);
+      $conf_fname, @modxfm, @rsmpl);
 
    $end_stage = $fit_stages[$snum];
    $snum_txt = sprintf("%02d", $snum);
@@ -374,7 +374,10 @@ for($snum = 0; $snum <= $#fit_stages; $snum++){
    print "   -- Model Max step: $modelmaxstep\n" if $opt{'verbose'};
    &do_cmd_batch("NRM$$-$snum_txt-model", "BLR$$-init-model",
                  'mincnorm', '-clobber',
-                 '-threshold', '-threshold_bmt',
+                 '-cutoff', 1.0,
+                 '-threshold',
+                 '-threshold_perc', 0.1,
+                 '-threshold_blur', 3,
                  '-threshold_mask', "$isomodel_base.msk.mnc",
                  $cmodel, "$isomodel_base.nrm.mnc");
    &do_cmd_batch("ISO$$-$snum_txt-model", "NRM$$-$snum_txt-model",
@@ -444,7 +447,7 @@ for($snum = 0; $snum <= $#fit_stages; $snum++){
             }
          else{
             # use the last linear xfm as a starting point
-            my $initcnctxfm = "$cworkdir/$files[$f].cnct.xfm";
+            my $initcnctxfm = "$cworkdir/$files[$f].init.xfm";
             &do_cmd_batch("IXF$$-$snum_txt-$f", "ISO$$-$snum_txt-model,IDT$$",
                           'xfmconcat', '-clobber',
                           "$opt{'workdir'}/$lastlin/concat-$files[$f].xfm", $initxfm,
@@ -468,9 +471,12 @@ for($snum = 0; $snum <= $#fit_stages; $snum++){
 
    # resample each file in the input series
    for($f=0; $f<=$#files; $f++){
-      $concatxfm = "$cworkdir/concat-$files[$f].xfm";
+      my($chkfile, $invxfm, $resxfm);
+      
+      $invxfm = "$cworkdir/inv-$files[$f].xfm";
+      $resxfm = "$cworkdir/rsmpl-$files[$f].xfm";
       $rsmpl[$f] = "$cworkdir/rsmpl-$files[$f].mnc";
-      my $chkfile = "$cworkdir/rsmpl-$files[$f].jpg";
+      $chkfile = "$cworkdir/rsmpl-$files[$f].jpg";
 
       if(&mcomplete($rsmpl[$f])){
          printf STDOUT "   | $rsmpl[$f] - exists, skipping\n";
@@ -479,19 +485,22 @@ for($snum = 0; $snum <= $#fit_stages; $snum++){
          printf STDOUT "   | $rsmpl[$f] - resampling\n";
 
          # first remove due to dodgy xfmtool code with no -clobber
-         my $gridfn = $concatxfm;
-         $gridfn =~ s/\.xfm$/\_grid\_0\.mnc/;
-         &do_cmd('rm', '-f', $concatxfm, $gridfn);
+         #my $gridfn = $concatxfm;
+         #$gridfn =~ s/\.xfm$/\_grid\_0\.mnc/;
+         #&do_cmd('rm', '-f', $concatxfm, $gridfn);
 
          # concat xfms
-         &do_cmd_batch("XCN$$-$snum_txt-$f", "AXF$$-$snum_txt",
-                       'xfmtool', "invert:$modxfm[$f]", $avgxfm, $concatxfm);
+         &do_cmd_batch("XIN$$-$snum_txt-$f", "FIT$$-$snum_txt-$f",
+                       'xfminvert', $modxfm[$f], $invxfm);
+         
+         &do_cmd_batch("XCN$$-$snum_txt-$f", "AXF$$-$snum_txt,XIN$$-$snum_txt-$f",
+                       'xfmconcat', $invxfm, $avgxfm, $resxfm);
 
          # resample
          &do_cmd_batch("RES$$-$snum_txt-$f", "XCN$$-$snum_txt-$f",
                        'mincresample', '-clobber',
                        '-sinc',
-                       '-transformation', $concatxfm,
+                       '-transformation', $resxfm,
                        '-like', "$isomodel_base.mnc",
                        $infiles[$f], $rsmpl[$f]);
          &do_cmd_batch("cRES$$-$snum_txt-$f", "RES$$-$snum_txt-$f",
