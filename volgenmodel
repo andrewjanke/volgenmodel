@@ -450,7 +450,7 @@ for($snum = 0; $snum <= $#fit_stages; $snum++){
             my $initcnctxfm = "$cworkdir/$files[$f].init.xfm";
             &do_cmd_batch("IXF$$-$snum_txt-$f", "ISO$$-$snum_txt-model,IDT$$",
                           'xfmconcat', '-clobber',
-                          "$opt{'workdir'}/$lastlin/concat-$files[$f].xfm", $initxfm,
+                          "$opt{'workdir'}/$lastlin/rsmpl-$files[$f].xfm", $initxfm,
                           $initcnctxfm);
 
             &do_cmd_batch("FIT$$-$snum_txt-$f", "IXF$$-$snum_txt-$f",
