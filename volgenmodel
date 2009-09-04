@@ -50,6 +50,7 @@ $me = &basename($0);
    'normalise' => 1,
    'extend' => 10,
    'config_file' => undef,
+   'linmethod' => 'bestlinreg',
    'init_model' => undef,
    'output_model' => undef,
    'fit_stages' => 'lin,lin,lin,0,0,0,0,1,1,1,1,2,2,2,2,3,3,3',
@@ -115,6 +116,8 @@ $Usage = "Usage: $me [options] <in1.mnc> [<in2.mnc> [...]]\n".
    ["-config_file", "string", 1, \$opt{config_file},
       "file containing the fitting configuration use -help for format",
       "<fit.conf>" ],
+   ["-linmethod", "string",  1, \$opt{'linmethod'},
+      "method to use for linear fitting [Default: bestlinreg]" ],
    ["-init_model", "string",  1, \$opt{'init_model'},
       "initial starting model to use [Default: first input file]" ],
    ["-output_model", "string",  1, \$opt{'output_model'},
@@ -442,7 +445,8 @@ for($snum = 0; $snum <= $#fit_stages; $snum++){
       else{
          if($end_stage eq 'lin'){
             &do_cmd_batch("FIT$$-$snum_txt-$f", "ISO$$-$snum_txt-model",
-                          'bestlinreg', '-clobber',
+                          split(/\ /, $opt{'linmethod'}),
+                          '-clobber',
                           "$isomodel_base.mnc", $regfiles[$f], $modxfm[$f]);
             }
          else{
@@ -450,7 +454,7 @@ for($snum = 0; $snum <= $#fit_stages; $snum++){
             my $initcnctxfm = "$cworkdir/$files[$f].init.xfm";
             &do_cmd_batch("IXF$$-$snum_txt-$f", "ISO$$-$snum_txt-model,IDT$$",
                           'xfmconcat', '-clobber',
-                          "$opt{'workdir'}/$lastlin/rsmpl-$files[$f].xfm", $initxfm,
+                          "$opt{'workdir'}/$lastlin/$files[$f].xfm", $initxfm,
                           $initcnctxfm);
 
             &do_cmd_batch("FIT$$-$snum_txt-$f", "IXF$$-$snum_txt-$f",
