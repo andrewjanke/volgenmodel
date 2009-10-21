@@ -533,10 +533,16 @@ for($snum = 0; $snum <= $#fit_stages; $snum++){
 
    # do symmetric averaging if required
    if($opt{'symmetric'}){
-      my (@fit_args, $symxfm);
-
+      my (@fit_args, $symxfm, $symfile);
+      
       $symxfm = "$cworkdir/model.sym.xfm";
-
+      $symfile = "$cworkdir/model.iavg-short.mnc";
+      
+      # convert double model to short
+      &do_cmd_batch("MTS$$-$snum_txt", "IAV$$-$snum_txt",
+                    'mincreshape', '-short',
+                    $iavgfile, $symfile);
+      
       # set up fit args
       if($end_stage eq 'lin'){
          @fit_args = ('-linear');
@@ -545,10 +551,10 @@ for($snum = 0; $snum <= $#fit_stages; $snum++){
          @fit_args = ('-nonlinear', '-config_file', $conf_fname);
          }
 
-      &do_cmd_batch("SYM$$-$snum_txt", "IAV$$-$snum_txt",
+      &do_cmd_batch("MTS$$-$snum_txt", "IAV$$-$snum_txt",
                     'volsymm', '-clobber',
                     @fit_args,
-                    $iavgfile, $symxfm, $stage_model);
+                    $symfile, $symxfm, $stage_model);
       }
    else{
       &do_cmd_batch("SYM$$-$snum_txt", "IAV$$-$snum_txt",
