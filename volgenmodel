@@ -23,7 +23,7 @@ use File::Temp qw/ tempdir /;
 
 # until I get organised and do this properly
 my $PACKAGE = &basename($0);
-my $VERSION = '1.3.0';
+my $VERSION = '1.4.0';
 my $PACKAGE_BUGREPORT = '"Andrew Janke" <a.janke@gmail.com>';
 
 my @default_conf = (
@@ -43,6 +43,7 @@ $me = &basename($0);
    'clobber' => 0,
    'fake' => 0,
    'check' => 1,
+   'clean' => 0,
    'keep_tmp' => 0,
    'workdir' => "./$me-work",
    'batch' => 0,
@@ -100,6 +101,8 @@ $Usage = "Usage: $me [options] <in1.mnc> [<in2.mnc> [...]]\n".
       "do a dry run, (echo cmds only)" ],
    ["-check", "boolean", 0, \$opt{'check'},
       "generate jpg check files during processing" ],
+   ["-clean", "boolean", 0, \$opt{'clean'},
+      "remove non-critical (resampled + xfmconcat) files during processing" ],
    ["-workdir", "string", 1, \$opt{workdir},
       "working directory to use (multiple GB needed)" ],
    ["-batch", "boolean", 0, \$opt{'batch'},
@@ -173,15 +176,14 @@ if(-e $opt{'output_model'} && !$opt{clobber}){
 # make working dir
 &do_cmd('mkdir', $opt{'workdir'}) if !-e $opt{'workdir'};
 
-# save the original command for later use
-open(FH, '>', "$opt{'workdir'}/orig-command-$$.sh");
+# save the original command
+open(FH, '>', "$opt{'workdir'}/orig-command.sh");
 print FH "#! /bin/sh\n" .
          "#\n".
          "# volgenmodel script\n\n" .
          join(' ', @orig_cmd) ."\n";
 close(FH);
-&do_cmd('chmod', '+x', "$opt{'workdir'}/orig-command-$$.sh");
-&do_cmd('ln', '-s', '-f', "orig-command-$$.sh", "$opt{'workdir'}/orig-command-last.sh");
+&do_cmd('chmod', '+x', "$opt{'workdir'}/orig-command.sh");
 
 # write script to kill processing
 if($opt{'batch'}){
@@ -216,83 +218,74 @@ else{
    }
 
 
-# set up the regfiles array (modify in place)
+# set up the regfiles array (and later modify in place)
 @regfiles = @infiles;
 
-# normalise and threshold
-if($opt{'normalise'}){
-   my($nrmdir, $f, $outfile, $chkfile);
+# do pre-processing (if required)
+if($opt{'normalise'} || $opt{'extend'} > 0){
+   my($predir, $f, $nrmfile, $chkfile, @cleanfiles);
    
-   print STDOUT "+++ Normalising and thresholding input data\n";
+   print STDOUT "+++ pre-processing input data\n";
    
-   $nrmdir = "$opt{'workdir'}/00-nrm";
-   &do_cmd('mkdir', '-p', $nrmdir);
+   $predir = "$opt{'workdir'}/00-pre";
+   &do_cmd('mkdir', '-p', $predir);
    
    for($f=0; $f<=$#files; $f++){
-      $outfile = "$nrmdir/$files[$f].nrm.mnc";
-      $chkfile = "$nrmdir/$files[$f].nrm.jpg";
+      $nrmfile = "$predir/$files[$f].nrm.mnc";
+      $regfiles[$f] = "$predir/$files[$f].pre.mnc";
+      $chkfile = "$predir/$files[$f].pre.jpg";
       
-      if(&mcomplete($outfile)){
-         printf STDOUT "   | $outfile - exists, skipping\n";
+      push(@cleanfiles, $nrmfile);
+      
+      if(&mcomplete($regfiles[$f])){
+         printf STDOUT "   | $regfiles[$f] - exists, skipping\n";
          }
       else{
-         printf STDOUT "   | $outfile - normalising\n";
-         &do_cmd_batch("NRM$$-$f", 'none',
-                       'mincnorm', '-clobber',
-                       '-cutoff', 1.0,
-                       '-threshold',
-                       '-threshold_perc', 0.1,
-                       '-threshold_blur', 3,
-                       $infiles[$f], $outfile);
          
-         &do_cmd_batch("cNRM$$-$f", "NRM$$-$f",
-                       'mincpik', '-clobber',
-                       '-triplanar',
-                       '-sagittal_offset', 10,
-                       $outfile, $chkfile) if $opt{'check'};
-         }
-      
-      $regfiles[$f] = $outfile;
-      }
-   }
-
-# extend
-if($opt{extend} > 0){
-   my($paddir, $f, $outfile, $chkfile);
-
-   print STDOUT "+++ Extending (padding) and setting up regfiles\n";
-
-   $paddir = "$opt{'workdir'}/00-pad";
-   &do_cmd('mkdir', '-p', $paddir);
-
-   for($f=0; $f<=$#files; $f++){
-      $outfile = "$paddir/$files[$f].pad.mnc";
-      $chkfile = "$paddir/$files[$f].pad.jpg";
-
-      if(&mcomplete($outfile)){
-         printf STDOUT "   | $outfile - exists, skipping\n";
-         }
-      else{
-         printf STDOUT "   | $outfile - padding\n";
-         &do_cmd_batch("PAD$$-$f", "NRM$$-$f",
-                       'volpad', '-clobber',
-                       '-distance', $opt{'extend'},
-                       '-smooth',
-                       '-smooth_distance', sprintf('%d', $opt{'extend'}/3),
-                       $regfiles[$f], $outfile);
+         # normalise
+         if($opt{'normalise'}){
+            printf STDOUT "   | $nrmfile - normalising\n";
+            &do_cmd_batch("NRM$$-$f", 'none',
+                          'mincnorm', '-clobber',
+                          '-cutoff', 1.0,
+                          '-threshold',
+                          '-threshold_perc', 0.1,
+                          '-threshold_blur', 3,
+                          $infiles[$f], $nrmfile);
+            }
+         else{
+            &do_cmd_batch("NRM$$-$f", 'none',
+                          'ln', '-s', '-f', $infiles[$f], $nrmfile);
+            }
          
+         # extend/pad
+         if($opt{'extend'} > 0){
+            printf STDOUT "   | $regfiles[$f] - padding\n";
+            &do_cmd_batch("PAD$$-$f", "NRM$$-$f",
+                          'volpad', '-clobber',
+                          '-distance', $opt{'extend'},
+                          '-smooth',
+                          '-smooth_distance', sprintf('%d', $opt{'extend'}/3),
+                          $nrmfile, $regfiles[$f]);
+            }
+         else{
+            &do_cmd_batch("PAD$$-$f", "NRM$$-$f",
+                          'cp', $nrmfile, $regfiles[$f]);
+            }
+         
+         # checkfile
          &do_cmd_batch("cPAD$$-$f", "PAD$$-$f",
                        'mincpik', '-clobber',
                        '-triplanar',
                        '-sagittal_offset', 10,
-                       $outfile, $chkfile) if $opt{'check'};
+                       $regfiles[$f], $chkfile) if $opt{'check'};
          }
-      
-      $regfiles[$f] = $outfile;
       }
+   
+   # clean up
+   &do_cmd_batch("CLN$$-nrm", "PAD$$-*",
+                 'rm', '-f', @cleanfiles) if $opt{'clean'};
    }
-
-
 
 # setup the initial model
 print STDOUT "+++ Setting up the initial model\n";
@@ -451,13 +444,13 @@ for($snum = 0; $snum <= $#fit_stages; $snum++){
             }
          else{
             # use the last linear xfm as a starting point
-            my $initcnctxfm = "$cworkdir/$files[$f].init.xfm";
+            my $initcnctxfm = "$cworkdir/init-$files[$f].xfm";
             &do_cmd_batch("IXF$$-$snum_txt-$f", "ISO$$-$snum_txt-model,IDT$$",
                           'xfmconcat', '-clobber',
                           "$opt{'workdir'}/$lastlin/$files[$f].xfm", $initxfm,
                           $initcnctxfm);
 
-            &do_cmd_batch("FIT$$-$snum_txt-$f", "IXF$$-$snum_txt-$f",
+            &do_cmd_batch("FIT$$-$snum_txt-$f", "IXF$$-$snum_txt-$f,ISM$$-$snum_txt-model",
                           'nlpfit', '-clobber',
                           '-init_xfm', $initcnctxfm,
                           '-config', $conf_fname,
@@ -490,11 +483,11 @@ for($snum = 0; $snum <= $#fit_stages; $snum++){
 
          # invert model xfm
          &do_cmd_batch("XIN$$-$snum_txt-$f", "FIT$$-$snum_txt-$f",
-                       'xfminvert', $modxfm[$f], $invxfm);
+                       'xfminvert', '-clobber', $modxfm[$f], $invxfm);
          
          # concat
          &do_cmd_batch("XCN$$-$snum_txt-$f", "AXF$$-$snum_txt,XIN$$-$snum_txt-$f",
-                       'xfmconcat', $invxfm, $avgxfm, $resxfm);
+                       'xfmconcat', '-clobber', $invxfm, $avgxfm, $resxfm);
 
          # resample
          &do_cmd_batch("RES$$-$snum_txt-$f", "XCN$$-$snum_txt-$f",
@@ -551,7 +544,7 @@ for($snum = 0; $snum <= $#fit_stages; $snum++){
          @fit_args = ('-nonlinear', '-config_file', $conf_fname);
          }
 
-      &do_cmd_batch("MTS$$-$snum_txt", "IAV$$-$snum_txt",
+      &do_cmd_batch("SYM$$-$snum_txt", "MTS$$-$snum_txt",
                     'volsymm', '-clobber',
                     @fit_args,
                     $symfile, $symxfm, $stage_model);
@@ -566,7 +559,32 @@ for($snum = 0; $snum <= $#fit_stages; $snum++){
                  '-scale', 4, '-tilesize', 400,
                  '-sagittal_offset', 10,
                  $stage_model, $stage_modelchk) if $opt{'check'};
-
+   
+   # create clean script for resampled and temp xfm files
+   open(CLEAN, ">$cworkdir/clean.sh");
+   print CLEAN "#! /bin/sh\n" .
+               "#\n" .
+               "# clean up for stage $snum_txt\n" .
+               "\n" .
+               "if [ -e $stage_model ]\n" .
+               "then\n" .
+               "   echo \"Removing files\"\n   \n" .
+               "   rm -f $cworkdir/rsmpl-*.mnc\n" .
+               "   rm -f $cworkdir/rsmpl-*.xfm\n" .
+               "   rm -f $cworkdir/inv-*.xfm\n" .
+               "   rm -f $cworkdir/inv-*.mnc\n" .
+               "   rm -f $cworkdir/init-*.xfm\n" .
+               "   rm -f $cworkdir/init-*.mnc\n" .
+               "fi\n";
+   close(CLEAN);
+   &do_cmd('chmod', '+x', "$cworkdir/clean.sh");
+   
+   # run clean script if required
+   if($opt{'clean'}){
+      &do_cmd_batch("CLN$$-$snum_txt", "SYM$$-$snum_txt",
+                    "$cworkdir/clean.sh");
+      }
+   
    # if on last step, copy model to $opt{'output_model'}
    if($snum == $#fit_stages){
       &do_cmd_batch("FNL$$-$snum_txt", "SYM$$-$snum_txt",
@@ -615,8 +633,9 @@ sub do_cmd_batch {
 
       if($opt{'batch'}){
          print '   [B] ';
+         &do_cmd('mkdir', '-p', "$logdir/$$");
          &do_cmd('qbatch',
-                 '-logfile', "$logdir/$name.log",
+                 '-logfile', "$logdir/$$/$name.log",
                  '-N', $name,
                  '-depends', $depends,
                  '--',
