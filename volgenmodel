@@ -23,7 +23,7 @@ use File::Temp qw/ tempdir /;
 
 # until I get organised and do this properly
 my $PACKAGE = &basename($0);
-my $VERSION = '1.4.0';
+my $VERSION = '1.4.1';
 my $PACKAGE_BUGREPORT = '"Andrew Janke" <a.janke@gmail.com>';
 
 my @default_conf = (
@@ -54,6 +54,7 @@ $me = &basename($0);
    'linmethod' => 'bestlinreg',
    'init_model' => undef,
    'output_model' => undef,
+   'output_stdev' => undef,
    'fit_stages' => 'lin,lin,lin,0,0,0,0,1,1,1,1,2,2,2,2,3,3,3',
    );
 
@@ -125,6 +126,8 @@ $Usage = "Usage: $me [options] <in1.mnc> [<in2.mnc> [...]]\n".
       "initial starting model to use [Default: first input file]" ],
    ["-output_model", "string",  1, \$opt{'output_model'},
       "output model name to use [Default: <dir of first infile>/VolModel-<stage>]" ],
+   ["-output_stdev", "string",  1, \$opt{'output_stdev'},
+      "output file name to use for standard deviation image" ],
    ["-fit_stages", "string", 1, \$opt{'fit_stages'},
       "comma separated list of stages of fitting to perform" ],
    );
@@ -344,7 +347,7 @@ for($snum = 0; $snum <= $#fit_stages; $snum++){
    &do_cmd('mkdir', $cworkdir) if !-e $cworkdir;
 
    # set up model and xfm names
-   my($avgxfm, $iavgfile, $istdfile, $stage_model, 
+   my($avgxfm, $symxfm, $iavgfile, $istdfile, $stage_model, 
       $iavgfilechk, $istdfilechk, $stage_modelchk);
    $avgxfm = "$cworkdir/avgxfm.xfm";
    $iavgfile = "$cworkdir/model.iavg.mnc";
@@ -526,14 +529,15 @@ for($snum = 0; $snum <= $#fit_stages; $snum++){
 
    # do symmetric averaging if required
    if($opt{'symmetric'}){
-      my (@fit_args, $symxfm, $symfile);
+      my (@fit_args, $symfile);
       
       $symxfm = "$cworkdir/model.sym.xfm";
       $symfile = "$cworkdir/model.iavg-short.mnc";
       
       # convert double model to short
       &do_cmd_batch("MTS$$-$snum_txt", "IAV$$-$snum_txt",
-                    'mincreshape', '-short',
+                    'mincreshape', '-clobber',
+                    '-short',
                     $iavgfile, $symfile);
       
       # set up fit args
@@ -595,6 +599,25 @@ for($snum = 0; $snum <= $#fit_stages; $snum++){
                     'minc_modify_header',
                     '-sappend', ":history='$history'",
                     $opt{'output_model'});
+      
+      # create and output standard deviation file if requested
+      if(defined($opt{'output_stdev'})){
+         if($opt{'symmetric'}){
+            &do_cmd_batch("FNL$$-$snum_txt", "SYM$$-$snum_txt",
+               'volsymm', '-clobber', 
+               $istdfile, $symxfm, $opt{'output_stdev'});
+            }
+         else{
+            &do_cmd_batch("FNL$$-$snum_txt", "SYM$$-$snum_txt",
+               'cp', '-f', $istdfile, $opt{'output_stdev'});
+            }
+         
+         # add the history string to the output file
+         &do_cmd_batch("HIS$$-$snum_txt", "FNL$$-$snum_txt",
+                    'minc_modify_header',
+                    '-sappend', ":history='$history'",
+                    $opt{'output_stdev'});
+         }
       }
    else{
       # spaghetti code ALERT!
