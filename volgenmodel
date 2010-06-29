@@ -23,7 +23,7 @@ use File::Temp qw/ tempdir /;
 
 # until I get organised and do this properly
 my $PACKAGE = &basename($0);
-my $VERSION = '1.4.1';
+my $VERSION = '1.4.2';
 my $PACKAGE_BUGREPORT = '"Andrew Janke" <a.janke@gmail.com>';
 
 my @default_conf = (
@@ -42,7 +42,7 @@ $me = &basename($0);
    'verbose' => 0,
    'clobber' => 0,
    'fake' => 0,
-   'check' => 1,
+   'check' => 0,
    'clean' => 0,
    'keep_tmp' => 0,
    'workdir' => "./$me-work",
@@ -94,11 +94,11 @@ $Usage = "Usage: $me [options] <in1.mnc> [<in2.mnc> [...]]\n".
    ["General Options", "section" ],
    ["-version", "call", 0, \&print_version_info,
       "print version and exit" ],
-   ["-verbose", "boolean", 0, \$opt{verbose},
+   ["-verbose", "boolean", 0, \$opt{'verbose'},
       "be verbose" ],
-   ["-clobber", "boolean", 0, \$opt{clobber},
+   ["-clobber", "boolean", 0, \$opt{'clobber'},
       "clobber existing check files" ],
-   ["-fake", "boolean", 0, \$opt{fake},
+   ["-fake", "boolean", 0, \$opt{'fake'},
       "do a dry run, (echo cmds only)" ],
    ["-check", "boolean", 0, \$opt{'check'},
       "generate jpg check files during processing" ],
@@ -110,14 +110,14 @@ $Usage = "Usage: $me [options] <in1.mnc> [<in2.mnc> [...]]\n".
       "use a batch system for processing (qbatch)" ],
 
    ["Fitting Options", "section" ],
-   ["-normalise", "boolean", 0, \$opt{normalise},
+   ["-normalise", "boolean", 0, \$opt{'normalise'},
       "normalise and threshold the input data before fitting" ],
-   ["-extend", "integer", 1, \$opt{extend},
+   ["-extend", "integer", 1, \$opt{'extend'},
       "extend the volume by # slices before fitting to avoid edge effects",
       "<integer>" ],
-   ["-symmetric", "boolean", 0, \$opt{symmetric},
+   ["-symmetric", "boolean", 0, \$opt{'symmetric'},
       "create a symmetric model" ],
-   ["-config_file", "string", 1, \$opt{config_file},
+   ["-config_file", "string", 1, \$opt{'config_file'},
       "file containing the fitting configuration use -help for format",
       "<fit.conf>" ],
    ["-linmethod", "string",  1, \$opt{'linmethod'},
@@ -172,7 +172,7 @@ foreach (@infiles){
 
 # check for output model
 $opt{'output_model'} = "$dirs[0]/VolModel-ALL.mnc" if !defined($opt{'output_model'});
-if(-e $opt{'output_model'} && !$opt{clobber}){
+if(-e $opt{'output_model'} && !$opt{'clobber'}){
    die "$me: $opt{'output_model'} exists, use -clobber to overwrite\n\n";
    }
 
@@ -202,7 +202,7 @@ if($opt{'batch'}){
 my(@conf, @regfiles, $cmodel, $initxfm);
 
 # set up the @conf array
-if(defined($opt{config_file})){
+if(defined($opt{'config_file'})){
    my($buf);
    
    # read in @conf
@@ -210,10 +210,10 @@ if(defined($opt{config_file})){
 
    # slurp
    if(eval($buf)){
-      print STDOUT "$me: Read config from $opt{config_file}\n" if $opt{verbose};
+      print STDOUT "$me: Read config from $opt{'config_file'}\n" if $opt{'verbose'};
       }
    else{
-      die "$me: Error reading config from $opt{config_file} (fix it!)\n\n";
+      die "$me: Error reading config from $opt{'config_file'} (fix it!)\n\n";
       }
    }
 else{
@@ -604,7 +604,8 @@ for($snum = 0; $snum <= $#fit_stages; $snum++){
       if(defined($opt{'output_stdev'})){
          if($opt{'symmetric'}){
             &do_cmd_batch("FNL$$-$snum_txt", "SYM$$-$snum_txt",
-               'volsymm', '-clobber', 
+               'volsymm', '-clobber',
+               '-nofit',
                $istdfile, $symxfm, $opt{'output_stdev'});
             }
          else{
@@ -633,8 +634,8 @@ for($snum = 0; $snum <= $#fit_stages; $snum++){
 
 
 sub do_cmd {
-   print STDOUT "@_\n" if $opt{verbose};
-   if(!$opt{fake}){
+   print STDOUT "@_\n" if $opt{'verbose'};
+   if(!$opt{'fake'}){
       system(@_) == 0 or die;
       }
    }
@@ -651,8 +652,8 @@ sub do_cmd_batch {
    $logdir = "$opt{'workdir'}/log";
    &do_cmd('mkdir', '-p', $logdir) if (!-e $logdir);
 
-   print STDOUT "[$name:$depends] - @_\n" if $opt{verbose};
-   if(!$opt{fake}){
+   print STDOUT "[$name:$depends] - @_\n" if $opt{'verbose'};
+   if(!$opt{'fake'}){
 
       if($opt{'batch'}){
          print '   [B] ';
