@@ -23,14 +23,14 @@ use File::Temp qw/ tempdir /;
 
 # until I get organised and do this properly
 my $PACKAGE = &basename($0);
-my $VERSION = '1.4.2';
+my $VERSION = '1.5.0';
 my $PACKAGE_BUGREPORT = '"Andrew Janke" <a.janke@gmail.com>';
 
 my @default_conf = (
    {'step' => 16, 'blur_fwhm' => 16, 'iterations' => 4},
    {'step' =>  8, 'blur_fwhm' =>  8, 'iterations' => 8},
-   {'step' =>  4, 'blur_fwhm' =>  4, 'iterations' => 8},
-   {'step' =>  2, 'blur_fwhm' =>  2, 'iterations' => 4},
+#   {'step' =>  4, 'blur_fwhm' =>  4, 'iterations' => 8},
+#   {'step' =>  2, 'blur_fwhm' =>  2, 'iterations' => 4},
    );
 
 
@@ -150,7 +150,7 @@ my @fit_stages = split(',', $opt{'fit_stages'});
 
 # check for infiles and create files array
 print STDOUT "+++ INFILES\n" if $opt{'verbose'};
-my(@dirs, @files, %fileh, $c);
+my(@dirs, @files, %fileh, $c, %jids);
 $c = 0;
 foreach (@infiles){
    my($dir, $f, $c_txt);
@@ -644,13 +644,15 @@ sub do_cmd {
 # 1st param: Job Name
 # 2nd param: Depends string
 # remainder: command
+# returns job ID
 sub do_cmd_batch {
-   my($name, $depends, $logdir);
+   my($name, $depends, $depends_str, $logdir, $buf, $jid);
    $name = shift(@_);
    $depends = shift(@_);
 
    $logdir = "$opt{'workdir'}/log";
    &do_cmd('mkdir', '-p', $logdir) if (!-e $logdir);
+   $jid = 0;
 
    print STDOUT "[$name:$depends] - @_\n" if $opt{'verbose'};
    if(!$opt{'fake'}){
@@ -658,12 +660,49 @@ sub do_cmd_batch {
       if($opt{'batch'}){
          print '   [B] ';
          &do_cmd('mkdir', '-p', "$logdir/$$");
+        
+         # figure out depends
+         my @ds = ();
+         foreach (split/\,/, $depends){
+            if(m/\*/){
+               my($regex) = $_;
+               $regex =~ s/\*/\.\*/g;
+
+               print STDOUT "\n\nUSING regex $regex (from: $_)\n\n";
+
+               # search for jids with wildcard
+               foreach (sort(keys(%jids))){
+                  if(m/$regex/){
+                     push(@ds, $jids{$_});
+                     }
+                  }
+               }
+            elsif($_ eq 'none'){
+               # nothing
+               }
+            else{
+               push(@ds, $jids{$_});
+               }
+            }
+         print STDOUT "\nSze: $#ds - @ds\n\n";
+          
+         # generate the script
          &do_cmd('qbatch',
-                 '-logfile', "$logdir/$$/$name.log",
-                 '-N', $name,
-                 '-depends', $depends,
+                 '--fake', '--queue', 'short.q', 
+                 '--script', "$logdir/$$/$name.sh",
+                 '--logfile', "$logdir/$$/$name.log",
+                 '--name', $name,
+                 (($#ds > -1) ? ('--depends', join(',', @ds)) : ()),
                  '--',
                  @_);
+
+         # submit it
+         chomp($buf = `qsub $logdir/$$/$name.sh`);
+         ($jid) = $buf =~ m/(\d+)/;
+
+print STDOUT "JID: $jid -- $name - $depends - " . join(',', @ds) . "\n";
+
+         $jids{$name} = $jid;
          }
       else{
          &do_cmd(@_);
