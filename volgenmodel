@@ -661,7 +661,7 @@ sub do_cmd_batch {
          print '   [B] ';
          &do_cmd('mkdir', '-p', "$logdir/$$");
         
-         # figure out depends
+         # gather dependencies
          my @ds = ();
          foreach (split/\,/, $depends){
             if(m/\*/){
@@ -681,10 +681,11 @@ sub do_cmd_batch {
                # nothing
                }
             else{
-               push(@ds, $jids{$_});
+               # add the JID if it exists
+               push(@ds, $jids{$_}) if defined($jids{$_});
                }
             }
-         print STDOUT "\nSze: $#ds - @ds\n\n";
+         print STDOUT "\nSze: $#ds - :" . join(':', @ds) . ":\n\n";
           
          # generate the script
          &do_cmd('qbatch',
