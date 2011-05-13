@@ -29,8 +29,8 @@ my $PACKAGE_BUGREPORT = '"Andrew Janke" <a.janke@gmail.com>';
 my @default_conf = (
    {'step' => 16, 'blur_fwhm' => 16, 'iterations' => 4},
    {'step' =>  8, 'blur_fwhm' =>  8, 'iterations' => 8},
-#   {'step' =>  4, 'blur_fwhm' =>  4, 'iterations' => 8},
-#   {'step' =>  2, 'blur_fwhm' =>  2, 'iterations' => 4},
+   {'step' =>  4, 'blur_fwhm' =>  4, 'iterations' => 8},
+   {'step' =>  2, 'blur_fwhm' =>  2, 'iterations' => 4},
    );
 
 
@@ -42,7 +42,7 @@ $me = &basename($0);
    'verbose' => 0,
    'clobber' => 0,
    'fake' => 0,
-   'check' => 0,
+   'check' => 1,
    'clean' => 0,
    'keep_tmp' => 0,
    'workdir' => "./$me-work",
@@ -199,7 +199,7 @@ if($opt{'batch'}){
    &do_cmd('chmod', '+x', "$opt{'workdir'}/kill-proc.sh");
    }
 
-my(@conf, @regfiles, $cmodel, $initxfm);
+my(@conf, @regfiles, $cmodel, $initxfm); 
 
 # set up the @conf array
 if(defined($opt{'config_file'})){
@@ -220,6 +220,12 @@ else{
    @conf = @default_conf;
    }
 
+# sanity check for fit config
+if($fit_stages[-1] > $#conf){
+   die "\n$me: Something is amiss with fit config, requested a " .
+      "fit step ($fit_stages[-1]) beyond what is defined in the " .
+      "fitting protocol (size: $#conf)\n\n";
+   }
 
 # set up the regfiles array (and later modify in place)
 @regfiles = @infiles;
@@ -247,13 +253,20 @@ if($opt{'normalise'} || $opt{'extend'} > 0){
          
          # normalise
          if($opt{'normalise'}){
+            my($step_x, $step_y, $step_z);
+            
+            # get step sizes
+            chomp($step_x = `mincinfo -attvalue xspace:step $infiles[$f]`);
+            chomp($step_y = `mincinfo -attvalue yspace:step $infiles[$f]`);
+            chomp($step_z = `mincinfo -attvalue zspace:step $infiles[$f]`);
+            
             printf STDOUT "   | $nrmfile - normalising\n";
             &do_cmd_batch("NRM$$-$f", 'none',
                           'mincnorm', '-clobber',
                           '-cutoff', 1.0,
                           '-threshold',
                           '-threshold_perc', 0.1,
-                          '-threshold_blur', 3,
+                          '-threshold_blur', ($step_x + $step_y + $step_y),
                           $infiles[$f], $nrmfile);
             }
          else{
@@ -303,10 +316,17 @@ else{
       &do_cmd_batch("BLR$$-init-model", "PAD$$-0", 'true');
       }
    else{
+      my($step_x, $step_y, $step_z);
+      
+      # get step sizes
+      chomp($step_x = `mincinfo -attvalue xspace:step $regfiles[0]`);
+      chomp($step_y = `mincinfo -attvalue yspace:step $regfiles[0]`);
+      chomp($step_z = `mincinfo -attvalue zspace:step $regfiles[0]`);
+      
       printf STDOUT "   | $cmodel - creating\n";
       &do_cmd_batch("BLR$$-init-model", "PAD$$-0",
                     'mincblur', '-clobber',
-                    '-fwhm', 4,
+                    '-3dfwhm', ($step_x * 4), ($step_y * 4), ($step_y * 4),
                     $regfiles[0], "$opt{'workdir'}/00-init-model");
       }
    }
@@ -337,6 +357,8 @@ print STDOUT "+++ Fitting\n";
 for($snum = 0; $snum <= $#fit_stages; $snum++){
    my($snum_txt, $end_stage, $f, $cworkdir,
       $conf_fname, @modxfm, @rsmpl);
+   my($step_x, $step_y, $step_z);
+
 
    $end_stage = $fit_stages[$snum];
    $snum_txt = sprintf("%02d", $snum);
@@ -370,7 +392,7 @@ for($snum = 0; $snum <= $#fit_stages; $snum++){
    
    printf STDOUT "   | $isomodel_base - creating\n";
    $modelmaxstep = $conf[(($end_stage eq 'lin') ? 0 : $end_stage)]{'step'}/4;
-   print "   -- Model Max step: $modelmaxstep\n" if $opt{'verbose'};
+   print "   -- Model Max step: $modelmaxstep\n";
    &do_cmd_batch("NRM$$-$snum_txt-model", "BLR$$-init-model",
                  'mincnorm', '-clobber',
                  '-cutoff', 1.0,
@@ -391,9 +413,12 @@ for($snum = 0; $snum <= $#fit_stages; $snum++){
                  "$isomodel_base.mnc", "$isomodel_base.jpg") if $opt{'check'};
    
    # create the isomodel fit mask
+   chomp($step_x = `mincinfo -attvalue xspace:step $isomodel_base.msk.mnc`);
+   chomp($step_y = `mincinfo -attvalue yspace:step $isomodel_base.msk.mnc`);
+   chomp($step_z = `mincinfo -attvalue zspace:step $isomodel_base.msk.mnc`);
    &do_cmd_batch("ISB$$-$snum_txt-model", "NRM$$-$snum_txt-model",
                  'mincblur', '-clobber',
-                 '-fwhm', 15,
+                 '-3dfwhm', ($step_x * 15), ($step_y * 15), ($step_y * 15),
                  "$isomodel_base.msk.mnc", "$isomodel_base.msk");
    &do_cmd_batch("ISM$$-$snum_txt-model", "ISB$$-$snum_txt-model",
                  'mincmath', '-clobber',
@@ -412,7 +437,7 @@ for($snum = 0; $snum <= $#fit_stages; $snum++){
       if($end_stage ne 'lin'){
          $conf_fname = "$cworkdir/fit.conf";
          print STDOUT "    + Creating $conf_fname +\n";
-
+         
          open(CONF, ">$conf_fname");
          print CONF "# $conf_fname -- created by $me\n#\n" .
                     "# End stage: $end_stage\n" .
@@ -668,8 +693,6 @@ sub do_cmd_batch {
                my($regex) = $_;
                $regex =~ s/\*/\.\*/g;
 
-               print STDOUT "\n\nUSING regex $regex (from: $_)\n\n";
-
                # search for jids with wildcard
                foreach (sort(keys(%jids))){
                   if(m/$regex/){
@@ -685,7 +708,6 @@ sub do_cmd_batch {
                push(@ds, $jids{$_}) if defined($jids{$_});
                }
             }
-         print STDOUT "\nSze: $#ds - :" . join(':', @ds) . ":\n\n";
           
          # generate the script
          &do_cmd('qbatch',
@@ -700,8 +722,7 @@ sub do_cmd_batch {
          # submit it
          chomp($buf = `qsub $logdir/$$/$name.sh`);
          ($jid) = $buf =~ m/(\d+)/;
-
-print STDOUT "JID: $jid -- $name - $depends - " . join(',', @ds) . "\n";
+         # print STDOUT "JID: $jid -- $name - $depends - " . join(',', @ds) . "\n";
 
          $jids{$name} = $jid;
          }
