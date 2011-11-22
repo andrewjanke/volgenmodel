@@ -49,7 +49,7 @@ $me = &basename($0);
    'batch' => 0,
    'symmetric' => 0,
    'normalise' => 1,
-   'extend' => 10,
+   'pad' => 10,
    'config_file' => undef,
    'linmethod' => 'bestlinreg',
    'init_model' => undef,
@@ -112,9 +112,12 @@ $Usage = "Usage: $me [options] <in1.mnc> [<in2.mnc> [...]]\n".
    ["Fitting Options", "section" ],
    ["-normalise", "boolean", 0, \$opt{'normalise'},
       "normalise and threshold the input data before fitting" ],
-   ["-extend", "integer", 1, \$opt{'extend'},
-      "extend the volume by # slices before fitting to avoid edge effects",
+   ["-pad", "integer", 1, \$opt{'pad'},
+      "pad the volume by # slices before fitting to avoid edge effects",
       "<integer>" ],
+   ["-extend", "integer", 1, \$opt{'pad'},
+      "synonym for -pad" ],
+   
    ["-symmetric", "boolean", 0, \$opt{'symmetric'},
       "create a symmetric model" ],
    ["-config_file", "string", 1, \$opt{'config_file'},
@@ -199,7 +202,7 @@ if($opt{'batch'}){
    &do_cmd('chmod', '+x', "$opt{'workdir'}/kill-proc.sh");
    }
 
-my(@conf, @regfiles, $cmodel, $initxfm); 
+my(@conf, @fitfiles, @resfiles, $cmodel, $initxfm); 
 
 # set up the @conf array
 if(defined($opt{'config_file'})){
@@ -227,81 +230,86 @@ if($fit_stages[-1] > $#conf){
       "fitting protocol (size: $#conf)\n\n";
    }
 
-# set up the regfiles array (and later modify in place)
-@regfiles = @infiles;
 
-# do pre-processing (if required)
-if($opt{'normalise'} || $opt{'extend'} > 0){
-   my($predir, $f, $nrmfile, $chkfile, @cleanfiles);
+# do pre-processing
+my($predir, $f, $nrmfile, $chkfile, @cleanfiles);
+
+print STDOUT "+++ pre-processing input data\n";
+
+$predir = "$opt{'workdir'}/00-pre";
+&do_cmd('mkdir', '-p', $predir);
+
+for($f=0; $f<=$#files; $f++){
+   $resfiles[$f] = "$predir/$files[$f].res.mnc";
+   $fitfiles[$f] = "$predir/$files[$f].fit.mnc";
+   $nrmfile = "$predir/$files[$f].nrm.mnc";
+   $chkfile = "$predir/$files[$f].fit.jpg";
    
-   print STDOUT "+++ pre-processing input data\n";
+   push(@cleanfiles, $nrmfile);
    
-   $predir = "$opt{'workdir'}/00-pre";
-   &do_cmd('mkdir', '-p', $predir);
-   
-   for($f=0; $f<=$#files; $f++){
-      $nrmfile = "$predir/$files[$f].nrm.mnc";
-      $regfiles[$f] = "$predir/$files[$f].pre.mnc";
-      $chkfile = "$predir/$files[$f].pre.jpg";
+   if(&mcomplete($resfiles[$f]) && &mcomplete($fitfiles[$f])){
+      printf STDOUT "   | $resfiles[$f] - exists, skipping\n";
+      }
+   else{
+
+      # centre the volume so that a PAT xfm has a greater chance
+      printf STDOUT "   | $resfiles[$f] - centreing\n";
+      &do_cmd_batch("CEN$$-$f", 'none',
+                    'volcentre', '-clobber',
+                    '-zero_dircos',
+                    $infiles[$f], $resfiles[$f]);
       
-      push(@cleanfiles, $nrmfile);
-      
-      if(&mcomplete($regfiles[$f])){
-         printf STDOUT "   | $regfiles[$f] - exists, skipping\n";
+      # normalise
+      if($opt{'normalise'}){
+         my($step_x, $step_y, $step_z);
+         
+         # get step sizes
+         chomp($step_x = `mincinfo -attvalue xspace:step $infiles[$f]`);
+         chomp($step_y = `mincinfo -attvalue yspace:step $infiles[$f]`);
+         chomp($step_z = `mincinfo -attvalue zspace:step $infiles[$f]`);
+         
+         printf STDOUT "   | $nrmfile - normalising\n";
+         &do_cmd_batch("NRM$$-$f", "CEN$$-$f",
+                       'mincnorm', '-clobber',
+                       '-cutoff', 1.0,
+                       '-threshold',
+                       '-threshold_perc', 0.1,
+                       '-threshold_blur', ($step_x + $step_y + $step_y),
+                       $resfiles[$f], $nrmfile);
          }
       else{
-         
-         # normalise
-         if($opt{'normalise'}){
-            my($step_x, $step_y, $step_z);
-            
-            # get step sizes
-            chomp($step_x = `mincinfo -attvalue xspace:step $infiles[$f]`);
-            chomp($step_y = `mincinfo -attvalue yspace:step $infiles[$f]`);
-            chomp($step_z = `mincinfo -attvalue zspace:step $infiles[$f]`);
-            
-            printf STDOUT "   | $nrmfile - normalising\n";
-            &do_cmd_batch("NRM$$-$f", 'none',
-                          'mincnorm', '-clobber',
-                          '-cutoff', 1.0,
-                          '-threshold',
-                          '-threshold_perc', 0.1,
-                          '-threshold_blur', ($step_x + $step_y + $step_y),
-                          $infiles[$f], $nrmfile);
-            }
-         else{
-            &do_cmd_batch("NRM$$-$f", 'none',
-                          'ln', '-s', '-f', $infiles[$f], $nrmfile);
-            }
-         
-         # extend/pad
-         if($opt{'extend'} > 0){
-            printf STDOUT "   | $regfiles[$f] - padding\n";
-            &do_cmd_batch("PAD$$-$f", "NRM$$-$f",
-                          'volpad', '-clobber',
-                          '-distance', $opt{'extend'},
-                          '-smooth',
-                          '-smooth_distance', sprintf('%d', $opt{'extend'}/3),
-                          $nrmfile, $regfiles[$f]);
-            }
-         else{
-            &do_cmd_batch("PAD$$-$f", "NRM$$-$f",
-                          'cp', $nrmfile, $regfiles[$f]);
-            }
-         
-         # checkfile
-         &do_cmd_batch("cPAD$$-$f", "PAD$$-$f",
-                       'mincpik', '-clobber',
-                       '-triplanar',
-                       '-sagittal_offset', 10,
-                       $regfiles[$f], $chkfile) if $opt{'check'};
+         &do_cmd_batch("NRM$$-$f", "CEN$$-$f",
+                       'ln', '-s', '-f', $resfiles[$f], $nrmfile);
          }
+      
+      # extend/pad
+      if($opt{'pad'} > 0){
+         printf STDOUT "   | $fitfiles[$f] - padding\n";
+         &do_cmd_batch("PAD$$-$f", "NRM$$-$f",
+                       'volpad', '-clobber',
+                       '-distance', $opt{'pad'},
+                       '-smooth',
+                       '-smooth_distance', sprintf('%d', $opt{'pad'}/3),
+                       $nrmfile, $fitfiles[$f]);
+         }
+      else{
+         &do_cmd_batch("PAD$$-$f", "NRM$$-$f",
+                       'cp', $nrmfile, $fitfiles[$f]);
+         }
+      
+      # checkfile
+      &do_cmd_batch("cPAD$$-$f", "PAD$$-$f",
+                    'mincpik', '-clobber',
+                    '-triplanar',
+                    '-sagittal_offset', 10,
+                    $fitfiles[$f], $chkfile) if $opt{'check'};
       }
-   
-   # clean up
-   &do_cmd_batch("CLN$$-nrm", "PAD$$-*",
-                 'rm', '-f', @cleanfiles) if $opt{'clean'};
    }
+
+# clean up
+&do_cmd_batch("CLN$$-nrm", "PAD$$-*",
+              'rm', '-f', @cleanfiles) if $opt{'clean'};
+
 
 # setup the initial model
 print STDOUT "+++ Setting up the initial model\n";
@@ -319,15 +327,15 @@ else{
       my($step_x, $step_y, $step_z);
       
       # get step sizes
-      chomp($step_x = `mincinfo -attvalue xspace:step $regfiles[0]`);
-      chomp($step_y = `mincinfo -attvalue yspace:step $regfiles[0]`);
-      chomp($step_z = `mincinfo -attvalue zspace:step $regfiles[0]`);
+      chomp($step_x = `mincinfo -attvalue xspace:step $infiles[0]`);
+      chomp($step_y = `mincinfo -attvalue yspace:step $infiles[0]`);
+      chomp($step_z = `mincinfo -attvalue zspace:step $infiles[0]`);
       
       printf STDOUT "   | $cmodel - creating\n";
       &do_cmd_batch("BLR$$-init-model", "PAD$$-0",
                     'mincblur', '-clobber',
                     '-3dfwhm', ($step_x * 4), ($step_y * 4), ($step_y * 4),
-                    $regfiles[0], "$opt{'workdir'}/00-init-model");
+                    $fitfiles[0], "$opt{'workdir'}/00-init-model");
       }
    }
 
@@ -413,12 +421,11 @@ for($snum = 0; $snum <= $#fit_stages; $snum++){
                  "$isomodel_base.mnc", "$isomodel_base.jpg") if $opt{'check'};
    
    # create the isomodel fit mask
-   chomp($step_x = `mincinfo -attvalue xspace:step $isomodel_base.msk.mnc`);
-   chomp($step_y = `mincinfo -attvalue yspace:step $isomodel_base.msk.mnc`);
-   chomp($step_z = `mincinfo -attvalue zspace:step $isomodel_base.msk.mnc`);
+   #chomp($step_x = `mincinfo -attvalue xspace:step $isomodel_base.msk.mnc`);
+   $step_x = 1;
    &do_cmd_batch("ISB$$-$snum_txt-model", "NRM$$-$snum_txt-model",
                  'mincblur', '-clobber',
-                 '-3dfwhm', ($step_x * 15), ($step_y * 15), ($step_y * 15),
+                 '-fwhm', ($step_x * 15),
                  "$isomodel_base.msk.mnc", "$isomodel_base.msk");
    &do_cmd_batch("ISM$$-$snum_txt-model", "ISB$$-$snum_txt-model",
                  'mincmath', '-clobber',
@@ -468,7 +475,7 @@ for($snum = 0; $snum <= $#fit_stages; $snum++){
             &do_cmd_batch("FIT$$-$snum_txt-$f", "ISO$$-$snum_txt-model",
                           split(/\ /, $opt{'linmethod'}),
                           '-clobber',
-                          "$isomodel_base.mnc", $regfiles[$f], $modxfm[$f]);
+                          "$isomodel_base.mnc", $fitfiles[$f], $modxfm[$f]);
             }
          else{
             # use the last linear xfm as a starting point
@@ -483,7 +490,7 @@ for($snum = 0; $snum <= $#fit_stages; $snum++){
                           '-init_xfm', $initcnctxfm,
                           '-config', $conf_fname,
                           '-source_mask', "$isomodel_base.fit-msk.mnc",
-                          "$isomodel_base.mnc", $regfiles[$f], $modxfm[$f]);
+                          "$isomodel_base.mnc", $fitfiles[$f], $modxfm[$f]);
             }
          }
       }
@@ -523,7 +530,7 @@ for($snum = 0; $snum <= $#fit_stages; $snum++){
                        '-sinc',
                        '-transformation', $resxfm,
                        '-like', "$isomodel_base.mnc",
-                       $infiles[$f], $rsmpl[$f]);
+                       $resfiles[$f], $rsmpl[$f]);
          &do_cmd_batch("cRES$$-$snum_txt-$f", "RES$$-$snum_txt-$f",
                        'mincpik', '-clobber',
                        '-triplanar',
@@ -665,7 +672,7 @@ sub do_cmd {
       }
    }
 
-# run a command possibly via batch
+# run a command via batch
 # 1st param: Job Name
 # 2nd param: Depends string
 # remainder: command
@@ -709,21 +716,35 @@ sub do_cmd_batch {
                }
             }
           
-         # generate the script
-         &do_cmd('qbatch',
-                 '--fake', '--queue', 'short.q', 
-                 '--script', "$logdir/$$/$name.sh",
-                 '--logfile', "$logdir/$$/$name.log",
-                 '--name', $name,
-                 (($#ds > -1) ? ('--depends', join(',', @ds)) : ()),
-                 '--',
-                 @_);
+         # generate and submit the script
+         @args = ('qbatch',
+            '--jid',
+            '--queue', 'all.q', 
+            '--script', "$logdir/$$/$name.sh",
+            '--logfile', "$logdir/$$/$name.log",
+            '--name', $name,
+            (($#ds > -1) ? ('--depends', join(',', @ds)) : ()),
+            '--',
+            @_);
+         print join(' ', @args) . "\n" if $opt{'verbose'};
+         
+         use IPC::Open2;
+         my $pid = open2(\*QBATCH_OUT, undef, @args);
+            
+         # close(QBATCH_IN);
+         waitpid($pid, 0);
+
+         while (<QBATCH_OUT>){
+            chomp;
+            # print STDOUT "JID: -$_-\n";
+            $jid = $_;
+            }
 
          # submit it
-         chomp($buf = `qsub $logdir/$$/$name.sh`);
-         ($jid) = $buf =~ m/(\d+)/;
-         # print STDOUT "JID: $jid -- $name - $depends - " . join(',', @ds) . "\n";
-
+         #chomp($buf = `qsub $logdir/$$/$name.sh`);
+         #($jid) = $buf =~ m/(\d+)/;
+         print STDOUT "JID: $jid -- $name - $depends - " . join(',', @ds) . "\n";
+         
          $jids{$name} = $jid;
          }
       else{
