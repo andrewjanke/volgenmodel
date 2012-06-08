@@ -23,7 +23,7 @@ use File::Temp qw/ tempdir /;
 
 # until I get organised and do this properly
 my $PACKAGE = &basename($0);
-my $VERSION = '1.5.0';
+my $VERSION = '1.6.0';
 my $PACKAGE_BUGREPORT = '"Andrew Janke" <a.janke@gmail.com>';
 
 my @default_conf = (
@@ -274,12 +274,12 @@ for($f=0; $f<=$#files; $f++){
                        '-cutoff', 1.0,
                        '-threshold',
                        '-threshold_perc', 0.1,
-                       '-threshold_blur', ($step_x + $step_y + $step_y),
+                       '-threshold_blur', abs($step_x + $step_y + $step_z),
                        $resfiles[$f], $nrmfile);
          }
       else{
          &do_cmd_batch("NRM$$-$f", "CEN$$-$f",
-                       'ln', '-s', '-f', $resfiles[$f], $nrmfile);
+                       'ln', '-s', '-f', &basename($resfiles[$f]), $nrmfile);
          }
       
       # extend/pad
@@ -294,7 +294,7 @@ for($f=0; $f<=$#files; $f++){
          }
       else{
          &do_cmd_batch("PAD$$-$f", "NRM$$-$f",
-                       'cp', $nrmfile, $fitfiles[$f]);
+                       'ln', '-s', '-f', &basename($nrmfile), $fitfiles[$f]);
          }
       
       # checkfile
@@ -334,7 +334,7 @@ else{
       printf STDOUT "   | $cmodel - creating\n";
       &do_cmd_batch("BLR$$-init-model", "PAD$$-0",
                     'mincblur', '-clobber',
-                    '-3dfwhm', ($step_x * 4), ($step_y * 4), ($step_y * 4),
+                    '-3dfwhm', abs($step_x * 4), abs($step_y * 4), abs($step_z * 4),
                     $fitfiles[0], "$opt{'workdir'}/00-init-model");
       }
    }
