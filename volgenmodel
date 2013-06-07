@@ -48,7 +48,9 @@ $me = &basename($0);
    'workdir' => "./$me-work",
    'batch' => 0,
    'symmetric' => 0,
+   'symmetric_dir' => 'x',
    'normalise' => 1,
+   'model_norm_thresh' => 0.1,
    'pad' => 10,
    'config_file' => undef,
    'linmethod' => 'bestlinreg',
@@ -118,8 +120,20 @@ $Usage = "Usage: $me [options] <in1.mnc> [<in2.mnc> [...]]\n".
    ["-extend", "integer", 1, \$opt{'pad'},
       "synonym for -pad" ],
    
+   ["-model_norm_thresh", "float", 1, \$opt{'model_norm_thresh'},
+      "threshold (WRT to max) for fit model default of 0.1, raise for noisy data" ],
+   
+   
    ["-symmetric", "boolean", 0, \$opt{'symmetric'},
       "create a symmetric model" ],
+      
+   ["-symmetric_x", "const", 'x', \$opt{'symmetric_dir'},
+      "symmetric model in x-plane (default)" ],
+   ["-symmetric_y", "const", 'y', \$opt{'symmetric_dir'},
+      "symmetric model in y-plane" ],
+   ["-symmetric_z", "const", 'z', \$opt{'symmetric_dir'},
+      "symmetric model in z-plane" ],
+      
    ["-config_file", "string", 1, \$opt{'config_file'},
       "file containing the fitting configuration use -help for format",
       "<fit.conf>" ],
@@ -127,6 +141,7 @@ $Usage = "Usage: $me [options] <in1.mnc> [<in2.mnc> [...]]\n".
       "method to use for linear fitting [Default: bestlinreg]" ],
    ["-init_model", "string",  1, \$opt{'init_model'},
       "initial starting model to use [Default: first input file]" ],
+   
    ["-output_model", "string",  1, \$opt{'output_model'},
       "output model name to use [Default: <dir of first infile>/VolModel-<stage>]" ],
    ["-output_stdev", "string",  1, \$opt{'output_stdev'},
@@ -153,15 +168,20 @@ my @fit_stages = split(',', $opt{'fit_stages'});
 
 # check for infiles and create files array
 print STDOUT "+++ INFILES\n" if $opt{'verbose'};
-my(@dirs, @files, %fileh, $c, %jids);
+my(@dirs, @files, %fileh, $c, $failed_find, %jids);
 $c = 0;
+$failed_find = 0;
 foreach (@infiles){
    my($dir, $f, $c_txt);
 
    $c_txt = sprintf('%04d', $c);
 
    # check
-   die "$me: Couldn't find file: $_\n" if !-e $_;
+   if(!-e $_){
+      warn "$me: Couldn't find file: $_\n";
+      $failed_find = 1;
+      next;
+      }
 
    # set up arrays
    $dirs[$c] = &dirname($_);
@@ -172,6 +192,7 @@ foreach (@infiles){
    print STDOUT "  | [$c_txt] $dirs[$c] / $files[$c]\n" if $opt{'verbose'};
    $c++;
    }
+die if $failed_find;
 
 # check for output model
 $opt{'output_model'} = "$dirs[0]/VolModel-ALL.mnc" if !defined($opt{'output_model'});
@@ -271,9 +292,9 @@ for($f=0; $f<=$#files; $f++){
          printf STDOUT "   | $nrmfile - normalising\n";
          &do_cmd_batch("NRM$$-$f", "CEN$$-$f",
                        'mincnorm', '-clobber',
-                       '-cutoff', 1.0,
+                       '-cutoff', $opt{'model_norm_thresh'},
                        '-threshold',
-                       '-threshold_perc', 0.1,
+                       '-threshold_perc', $opt{'model_norm_thresh'},
                        '-threshold_blur', abs($step_x + $step_y + $step_z),
                        $resfiles[$f], $nrmfile);
          }
@@ -403,9 +424,9 @@ for($snum = 0; $snum <= $#fit_stages; $snum++){
    print "   -- Model Max step: $modelmaxstep\n";
    &do_cmd_batch("NRM$$-$snum_txt-model", "BLR$$-init-model",
                  'mincnorm', '-clobber',
-                 '-cutoff', 1.0,
+                 '-cutoff', $opt{'model_norm_thresh'},
                  '-threshold',
-                 '-threshold_perc', 0.1,
+                 '-threshold_perc', $opt{'model_norm_thresh'},
                  '-threshold_blur', 3,
                  '-threshold_mask', "$isomodel_base.msk.mnc",
                  $cmodel, "$isomodel_base.nrm.mnc");
@@ -541,8 +562,10 @@ for($snum = 0; $snum <= $#fit_stages; $snum++){
 
    # create model
    &do_cmd_batch("IAV$$-$snum_txt", "RES$$-$snum_txt-*",
-                 'mincaverage', '-clobber',
+                 'mincbigaverage', '-clobber',
                  '-float',
+                 '-robust',
+                 '-tmpdir', "$opt{'workdir'}/tmp",
                  '-sdfile', $istdfile,
                  @rsmpl, $iavgfile);
    &do_cmd_batch("cIAV$$-$snum_txt", "IAV$$-$snum_txt",
@@ -582,6 +605,7 @@ for($snum = 0; $snum <= $#fit_stages; $snum++){
 
       &do_cmd_batch("SYM$$-$snum_txt", "MTS$$-$snum_txt",
                     'volsymm', '-clobber',
+                    "-$opt{'symmetric_dir'}",
                     @fit_args,
                     $symfile, $symxfm, $stage_model);
       }
@@ -637,6 +661,7 @@ for($snum = 0; $snum <= $#fit_stages; $snum++){
          if($opt{'symmetric'}){
             &do_cmd_batch("FNL$$-$snum_txt", "SYM$$-$snum_txt",
                'volsymm', '-clobber',
+               "-$opt{'symmetric_dir'}",
                '-nofit',
                $istdfile, $symxfm, $opt{'output_stdev'});
             }
