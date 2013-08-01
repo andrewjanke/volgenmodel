@@ -51,7 +51,9 @@ $me = &basename($0);
    'symmetric_dir' => 'x',
    'normalise' => 1,
    'model_norm_thresh' => 0.1,
+   'model_min_step' => 0.5,
    'pad' => 10,
+   'iso' => 1,
    'config_file' => undef,
    'linmethod' => 'bestlinreg',
    'init_model' => undef,
@@ -119,10 +121,13 @@ $Usage = "Usage: $me [options] <in1.mnc> [<in2.mnc> [...]]\n".
       "<integer>" ],
    ["-extend", "integer", 1, \$opt{'pad'},
       "synonym for -pad" ],
+   ["-iso", "boolean", 0, \$opt{'iso'},
+      "resample the volumes to isotropic before fitting" ],
    
    ["-model_norm_thresh", "float", 1, \$opt{'model_norm_thresh'},
       "threshold (WRT to max) for fit model default of 0.1, raise for noisy data" ],
-   
+   ["-model_min_step", "float", 1, \$opt{'model_min_step'},
+      "minimum model step size" ],
    
    ["-symmetric", "boolean", 0, \$opt{'symmetric'},
       "create a symmetric model" ],
@@ -253,7 +258,7 @@ if($fit_stages[-1] > $#conf){
 
 
 # do pre-processing
-my($predir, $f, $nrmfile, $chkfile, @cleanfiles);
+my($predir, $f, $nrmfile, $isofile, $chkfile, @cleanfiles);
 
 print STDOUT "+++ pre-processing input data\n";
 
@@ -264,6 +269,7 @@ for($f=0; $f<=$#files; $f++){
    $resfiles[$f] = "$predir/$files[$f].res.mnc";
    $fitfiles[$f] = "$predir/$files[$f].fit.mnc";
    $nrmfile = "$predir/$files[$f].nrm.mnc";
+   $isofile = "$predir/$files[$f].iso.mnc";
    $chkfile = "$predir/$files[$f].fit.jpg";
    
    push(@cleanfiles, $nrmfile);
@@ -297,29 +303,45 @@ for($f=0; $f<=$#files; $f++){
                        '-threshold_perc', $opt{'model_norm_thresh'},
                        '-threshold_blur', abs($step_x + $step_y + $step_z),
                        $resfiles[$f], $nrmfile);
+         &do_cmd_batch("NMV$$-$f", "NRM$$-$f",
+                       'mv', '-f', $nrmfile, $resfiles[$f]);
          }
       else{
-         &do_cmd_batch("NRM$$-$f", "CEN$$-$f",
-                       'ln', '-s', '-f', &basename($resfiles[$f]), $nrmfile);
+         &do_cmd_batch("NMV$$-$f", "CEN$$-$f", "true");
          }
       
       # extend/pad
       if($opt{'pad'} > 0){
          printf STDOUT "   | $fitfiles[$f] - padding\n";
-         &do_cmd_batch("PAD$$-$f", "NRM$$-$f",
+         &do_cmd_batch("PAD$$-$f", "NMV$$-$f",
                        'volpad', '-clobber',
                        '-distance', $opt{'pad'},
                        '-smooth',
                        '-smooth_distance', sprintf('%d', $opt{'pad'}/3),
-                       $nrmfile, $fitfiles[$f]);
+                       $resfiles[$f], $fitfiles[$f]);
          }
       else{
-         &do_cmd_batch("PAD$$-$f", "NRM$$-$f",
-                       'ln', '-s', '-f', &basename($nrmfile), $fitfiles[$f]);
+         &do_cmd_batch("PAD$$-$f", "NMV$$-$f",
+                       'cp', '-f', $resfiles[$f], $fitfiles[$f]);
+         }
+      
+      # isotropic resampling
+      if($opt{'iso'}){
+         
+         printf STDOUT "   | $isofile - resampling isotropically\n";
+         &do_cmd_batch("ISO$$-$f", "PAD$$-$f",
+                       'voliso', '--clobber',
+                       '--avgstep',
+                       $fitfiles[$f], $isofile);
+         &do_cmd_batch("IMV$$-$f", "ISO$$-$f",
+                       'mv', '-f', $isofile, $fitfiles[$f]);
+         }
+      else{
+         &do_cmd_batch("IMV$$-$f", "PAD$$-$f", "true");
          }
       
       # checkfile
-      &do_cmd_batch("cPAD$$-$f", "PAD$$-$f",
+      &do_cmd_batch("cPAD$$-$f", "IMV$$-$f",
                     'mincpik', '-clobber',
                     '-triplanar',
                     '-sagittal_offset', 10,
@@ -342,7 +364,7 @@ else{
    $cmodel = "$opt{'workdir'}/00-init-model_blur.mnc";
    if(&mcomplete($cmodel)){
       printf STDOUT "   | $cmodel - exists, skipping\n";
-      &do_cmd_batch("BLR$$-init-model", "PAD$$-0", 'true');
+      &do_cmd_batch("BLR$$-init-model", "IMV$$-0", 'true');
       }
    else{
       my($step_x, $step_y, $step_z);
@@ -353,7 +375,7 @@ else{
       chomp($step_z = `mincinfo -attvalue zspace:step $infiles[0]`);
       
       printf STDOUT "   | $cmodel - creating\n";
-      &do_cmd_batch("BLR$$-init-model", "PAD$$-0",
+      &do_cmd_batch("BLR$$-init-model", "IMV$$-0",
                     'mincblur', '-clobber',
                     '-3dfwhm', abs($step_x * 4), abs($step_y * 4), abs($step_z * 4),
                     $fitfiles[0], "$opt{'workdir'}/00-init-model");
@@ -421,6 +443,13 @@ for($snum = 0; $snum <= $#fit_stages; $snum++){
    
    printf STDOUT "   | $isomodel_base - creating\n";
    $modelmaxstep = $conf[(($end_stage eq 'lin') ? 0 : $end_stage)]{'step'}/4;
+   
+   # check that the resulting model won't be too large
+   # this seems confusing but it actually makes sense...
+   if($modelmaxstep < $opt{'model_min_step'}){
+      $modelmaxstep = $opt{'model_min_step'};
+      }
+   
    print "   -- Model Max step: $modelmaxstep\n";
    &do_cmd_batch("NRM$$-$snum_txt-model", "BLR$$-init-model",
                  'mincnorm', '-clobber',
@@ -635,6 +664,7 @@ for($snum = 0; $snum <= $#fit_stages; $snum++){
                "   rm -f $cworkdir/inv-*.mnc\n" .
                "   rm -f $cworkdir/init-*.xfm\n" .
                "   rm -f $cworkdir/init-*.mnc\n" .
+               "   rm -rf $opt{'workdir'}/tmp\n" .
                "fi\n";
    close(CLEAN);
    &do_cmd('chmod', '+x', "$cworkdir/clean.sh");
